@@ -1,26 +1,17 @@
 {
-  "extends": "./tsconfig.build.json",
-  "compilerOptions": {
-    "paths": {
-      "@prisma/client": ["./packages/client/src"],
-      "@prisma/sdk": ["./packages/sdk/src"],
-      "@prisma/sdk/dist/*": ["./packages/sdk/src/*"],
-      "@prisma/migrate": ["./packages/migrate/src"],
-      "@prisma/generator-helper": ["./packages/generator-helper/src"],
-      "@prisma/engine-core": ["./packages/engine-core/src"],
-      "@prisma/engine-core/dist/*": ["./packages/engine-core/src/*"],
-      "@prisma/debug": ["./packages/debug/src"],
-      "@prisma/cli": ["./packages/cli/src"],
-      "@prisma/get-platform": ["../engines-wrapper/packages/get-platform/src"],
-      "@prisma/fetch-engine": ["../engines-wrapper/packages/fetch-engine/src"],
-      "@prisma/engines": ["../engines-wrapper/packages/engines/src"],
-      "@prisma/engines-version": ["../engines-wrapper/packages/engines-version/src"]
-    }
-  },
-  "include": ["**/*"],
+  "extends": "./tsconfig.utils.typecheck.json",
+  "include": ["./**/*", ".eslintrc.js"],
+  // same list as in tsconfig.regular.json, minus extra test exclusion and sandbox
   "exclude": [
     "**/dist",
     "**/build",
-    "**/node_modules"
+    "**/fixtures",
+    "**/node_modules",
+    "**/.prisma/client",
+    "./packages/cli/preinstall",
+    "./packages/cli/prisma-client",
+    "./packages/client/runtime",
+    "./packages/client/declaration",
+    "./packages/client/generator-build"
   ]
 }

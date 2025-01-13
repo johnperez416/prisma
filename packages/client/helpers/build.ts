@@ -1,124 +1,224 @@
-import type { BuildOptions } from '../../../helpers/compile/build'
-import { build } from '../../../helpers/compile/build'
-import { fillPlugin } from '../../../helpers/compile/plugins/fill-plugin/fillPlugin'
-import { Extractor, ExtractorConfig } from '@microsoft/api-extractor'
+import { ClientEngineType } from '@prisma/internals'
+import fs from 'fs'
 import path from 'path'
 
-const external = ['_http_common']
+import type { BuildOptions } from '../../../helpers/compile/build'
+import { build } from '../../../helpers/compile/build'
+import { copyFilePlugin } from '../../../helpers/compile/plugins/copyFilePlugin'
+import { fillPlugin, smallBuffer, smallDecimal } from '../../../helpers/compile/plugins/fill-plugin/fillPlugin'
+import { noSideEffectsPlugin } from '../../../helpers/compile/plugins/noSideEffectsPlugin'
 
-// we define the config for generator
-const generatorBuildConfig: BuildOptions = {
-  entryPoints: ['src/generation/generator.ts'],
-  outfile: 'generator-build/index',
-  bundle: true,
-  external: external,
-}
+const wasmEngineDir = path.dirname(require.resolve('@prisma/query-engine-wasm/package.json'))
+const fillPluginDir = path.join('..', '..', 'helpers', 'compile', 'plugins', 'fill-plugin')
+const functionPolyfillPath = path.join(fillPluginDir, 'fillers', 'function.ts')
+const weakrefPolyfillPath = path.join(fillPluginDir, 'fillers', 'weakref.ts')
+const runtimeDir = path.resolve(__dirname, '..', 'runtime')
+
+const DRIVER_ADAPTER_SUPPORTED_PROVIDERS = ['postgresql', 'sqlite', 'mysql'] as const
+
+type DriverAdapterSupportedProvider = (typeof DRIVER_ADAPTER_SUPPORTED_PROVIDERS)[number]
 
 // we define the config for runtime
-const runtimeBuildConfig: BuildOptions = {
-  entryPoints: ['src/runtime/index.ts'],
-  outfile: 'runtime/index',
-  bundle: true,
-  external: external,
-  define: {
-    'globalThis.NOT_PRISMA_DATA_PROXY': 'true',
-    // that fixes an issue with lz-string umd builds
-    'define.amd': 'false',
-  },
+function nodeRuntimeBuildConfig(targetBuildType: typeof TARGET_BUILD_TYPE): BuildOptions {
+  return {
+    name: targetBuildType,
+    entryPoints: ['src/runtime/index.ts'],
+    outfile: `runtime/${targetBuildType}`,
+    bundle: true,
+    minify: true,
+    sourcemap: 'linked',
+    emitTypes: targetBuildType === 'library',
+    define: {
+      NODE_CLIENT: 'true',
+      TARGET_BUILD_TYPE: JSON.stringify(targetBuildType),
+      // that fixes an issue with lz-string umd builds
+      'define.amd': 'false',
+    },
+    plugins: [noSideEffectsPlugin(/^(arg|lz-string)$/)],
+  }
+}
+
+function wasmBindgenRuntimeConfig(provider: DriverAdapterSupportedProvider): BuildOptions {
+  return {
+    name: `query_engine_bg.${provider}`,
+    entryPoints: [`@prisma/query-engine-wasm/${provider}/query_engine_bg.js`],
+    outfile: `runtime/query_engine_bg.${provider}`,
+    minify: true,
+    plugins: [
+      fillPlugin({
+        defaultFillers: false,
+        fillerOverrides: {
+          Function: {
+            define: 'fn',
+            globals: functionPolyfillPath,
+          },
+        },
+      }),
+    ],
+  }
 }
 
 // we define the config for browser
 const browserBuildConfig: BuildOptions = {
+  name: 'browser',
   entryPoints: ['src/runtime/index-browser.ts'],
   outfile: 'runtime/index-browser',
   target: ['chrome58', 'firefox57', 'safari11', 'edge16'],
   bundle: true,
-  external: external,
-}
-
-// we define the config for proxy
-const proxyBuildConfig: BuildOptions = {
-  entryPoints: ['src/runtime/index.ts'],
-  outfile: 'runtime/proxy',
-  bundle: true,
   minify: true,
-  legalComments: 'none',
-  external: external,
-  define: {
-    // that helps us to tree-shake unused things out
-    'globalThis.NOT_PRISMA_DATA_PROXY': 'false',
-    // that fixes an issue with lz-string umd builds
-    'define.amd': 'false',
-  },
-  plugins: [
-    fillPlugin(
-      {
-        // TODO no tree shaking on wrapper pkgs
-        '@prisma/get-platform': { contents: '' },
-        // removes un-needed code out of `chalk`
-        'supports-color': { contents: '' },
-        // these can not be exported any longer
-        './warnEnvConflicts': { contents: '' },
-        './utils/find': { contents: '' },
-      },
-      // we only trigger it on the first step (esm)
-      // because that is where tree-shaking happens
-      (options) => options.format === 'esm',
-    ),
-  ],
-  logLevel: 'error',
+  sourcemap: 'linked',
 }
 
 /**
- * Bundle all type definitions by using the API Extractor from RushStack
- * @param filename the source d.ts to bundle
- * @param outfile the output bundled file
+ * Overrides meant for edge, wasm and react-native builds
+ * If at some point they diverge feel free to split them
  */
-function bundleTypeDefinitions(filename: string, outfile: string) {
-  // we give the config in its raw form instead of a file
-  const extractorConfig = ExtractorConfig.prepare({
-    configObject: {
-      projectFolder: path.join(__dirname, '..'),
-      mainEntryPointFilePath: `${filename}.d.ts`,
-      bundledPackages: [
-        'decimal.js',
-        'sql-template-tag',
-        '@prisma/sdk',
-        '@prisma/engine-core',
-        '@prisma/generator-helper',
-      ],
-      compiler: {
-        tsconfigFilePath: 'tsconfig.build.json',
-      },
-      dtsRollup: {
-        enabled: true,
-        untrimmedFilePath: `${outfile}.d.ts`,
-      },
-      tsdocMetadata: {
-        enabled: false,
-      },
-    },
-    packageJsonFullPath: path.join(__dirname, '..', 'package.json'),
-    configObjectFullPath: undefined,
-  })
-
-  // here we trigger the "command line" interface equivalent
-  const extractorResult = Extractor.invoke(extractorConfig, {
-    showVerboseMessages: true,
-    localBuild: true,
-  })
-
-  // we exit the process immediately if there were errors
-  if (extractorResult.succeeded === false) {
-    console.error(`API Extractor completed with errors`)
-    process.exit(1)
-  }
+const commonRuntimesOverrides = {
+  // we remove eval and Function for vercel
+  eval: { define: 'undefined' },
+  Function: {
+    define: 'fn',
+    globals: functionPolyfillPath,
+  },
+  // we shim WeakRef, it does not exist on CF
+  WeakRef: {
+    globals: weakrefPolyfillPath,
+  },
+  // these can not be exported anymore
+  './warnEnvConflicts': { contents: '' },
 }
 
-void build([generatorBuildConfig, runtimeBuildConfig, browserBuildConfig, proxyBuildConfig]).then(() => {
-  if (process.env.DEV !== 'true') {
-    bundleTypeDefinitions('declaration/runtime/index', 'runtime/index')
-    bundleTypeDefinitions('declaration/runtime/index', 'runtime/proxy')
-    bundleTypeDefinitions('declaration/runtime/index-browser', 'runtime/index-browser')
-  }
+const runtimesCommonBuildConfig = {
+  target: 'ES2021',
+  entryPoints: ['src/runtime/index.ts'],
+  bundle: true,
+  minify: true,
+  sourcemap: 'linked',
+  emitTypes: false,
+  define: {
+    // that helps us to tree-shake unused things out
+    NODE_CLIENT: 'false',
+    'globalThis.DEBUG_COLORS': 'false',
+    // that fixes an issue with lz-string umd builds
+    'define.amd': 'false',
+  },
+  logLevel: 'error',
+  legalComments: 'none',
+} satisfies BuildOptions
+
+// we define the config for edge
+const edgeRuntimeBuildConfig: BuildOptions = {
+  ...runtimesCommonBuildConfig,
+  name: 'edge',
+  outfile: 'runtime/edge',
+  define: {
+    ...runtimesCommonBuildConfig.define,
+    // tree shake the Library and Binary engines out
+    TARGET_BUILD_TYPE: '"edge"',
+  },
+  plugins: [
+    fillPlugin({
+      fillerOverrides: commonRuntimesOverrides,
+    }),
+  ],
+}
+
+// we define the config for wasm
+const wasmRuntimeBuildConfig: BuildOptions = {
+  ...runtimesCommonBuildConfig,
+  target: 'ES2022',
+  name: 'wasm',
+  outfile: 'runtime/wasm',
+  define: {
+    ...runtimesCommonBuildConfig.define,
+    TARGET_BUILD_TYPE: '"wasm"',
+  },
+  plugins: [
+    fillPlugin({
+      // not yet enabled in edge build while driverAdapters is not GA
+      fillerOverrides: { ...commonRuntimesOverrides, ...smallBuffer, ...smallDecimal },
+    }),
+    copyFilePlugin(
+      DRIVER_ADAPTER_SUPPORTED_PROVIDERS.map((provider) => ({
+        from: path.join(wasmEngineDir, provider, 'query_engine_bg.wasm'),
+        to: path.join(runtimeDir, `query_engine_bg.${provider}.wasm`),
+      })),
+    ),
+  ],
+}
+
+// React Native is similar to edge in the sense it doesn't have the node API/libraries
+// and also not all the browser APIs, therefore it needs to polyfill the same things as edge
+const reactNativeBuildConfig: BuildOptions = {
+  ...runtimesCommonBuildConfig,
+  name: 'react-native',
+  target: 'ES2022',
+  outfile: 'runtime/react-native',
+  emitTypes: true,
+  define: {
+    NODE_CLIENT: 'false',
+    TARGET_BUILD_TYPE: '"react-native"',
+  },
+  plugins: [
+    fillPlugin({
+      fillerOverrides: { ...commonRuntimesOverrides },
+    }),
+  ],
+}
+
+// we define the config for edge in esm format (used by deno)
+const edgeEsmRuntimeBuildConfig: BuildOptions = {
+  ...edgeRuntimeBuildConfig,
+  name: 'edge-esm',
+  outfile: 'runtime/edge-esm',
+  format: 'esm',
+}
+
+// we define the config for generator
+const generatorBuildConfig: BuildOptions = {
+  name: 'generator',
+  entryPoints: ['src/generation/generator.ts'],
+  outfile: 'generator-build/index',
+  bundle: true,
+  emitTypes: false,
+}
+
+// default-index.js file in scripts
+const defaultIndexConfig: BuildOptions = {
+  name: 'default-index',
+  entryPoints: ['src/scripts/default-index.ts'],
+  outfile: 'scripts/default-index',
+  bundle: true,
+  emitTypes: false,
+}
+
+const accelerateContractBuildConfig: BuildOptions = {
+  name: 'accelerate-contract',
+  entryPoints: ['src/runtime/core/engines/accelerate/AccelerateEngine.ts'],
+  outfile: '../accelerate-contract/dist/index',
+  format: 'cjs',
+  bundle: true,
+  emitTypes: true,
+}
+
+function writeDtsRexport(fileName: string) {
+  fs.writeFileSync(path.join(runtimeDir, fileName), 'export * from "./library"\n')
+}
+
+void build([
+  generatorBuildConfig,
+  nodeRuntimeBuildConfig(ClientEngineType.Binary),
+  nodeRuntimeBuildConfig(ClientEngineType.Library),
+  browserBuildConfig,
+  edgeRuntimeBuildConfig,
+  edgeEsmRuntimeBuildConfig,
+  wasmRuntimeBuildConfig,
+  wasmBindgenRuntimeConfig('postgresql'),
+  wasmBindgenRuntimeConfig('mysql'),
+  wasmBindgenRuntimeConfig('sqlite'),
+  defaultIndexConfig,
+  reactNativeBuildConfig,
+  accelerateContractBuildConfig,
+]).then(() => {
+  writeDtsRexport('binary.d.ts')
 })

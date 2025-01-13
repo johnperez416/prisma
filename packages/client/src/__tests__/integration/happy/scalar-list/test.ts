@@ -1,13 +1,13 @@
 import path from 'path'
+
 import { getTestClient } from '../../../../utils/getTestClient'
 import { tearDownPostgres } from '../../../../utils/setupPostgres'
 import { migrateDb } from '../../__helpers__/migrateDb'
 
 beforeAll(async () => {
-  process.env.TEST_POSTGRES_URI += '-scalar-list-test'
-  await tearDownPostgres(process.env.TEST_POSTGRES_URI!)
+  process.env.DATABASE_URL = process.env.TEST_POSTGRES_URI!.replace('tests', 'tests-scalar-list-test')
+  await tearDownPostgres(process.env.DATABASE_URL)
   await migrateDb({
-    connectionString: process.env.TEST_POSTGRES_URI!,
     schemaPath: path.join(__dirname, 'schema.prisma'),
   })
 })
@@ -38,7 +38,7 @@ test('scalar-list filter', async () => {
   const PrismaClient = await getTestClient()
 
   const prisma = new PrismaClient()
-  // 1. setup data
+  // 1. set up data
   await setupData(prisma)
 
   // 2. do some queries

@@ -41,21 +41,28 @@ test('ignore comments', () => {
   const result = extractSqliteSources(datamodel, '/cwd', '/outputdir')
 
   expect(result).toMatchInlineSnapshot(`
-    Array [
-      Object {
-        name: db,
-        url: ../cwd/my/folder/dev.db,
+    [
+      {
+        "name": "db",
+        "url": "../cwd/my/folder/dev.db",
       },
     ]
   `)
 
-  expect(serializeDatasources(result)).toMatchInlineSnapshot(`
-    [
+  let serializedResult = serializeDatasources(result)
+
+  // TODO: Windows: fixup to work around a bug in jestSnapshotSerializer
+  if (process.platform === 'win32') {
+    serializedResult = serializedResult.replace(/\\\\/g, '/')
+  }
+
+  expect(serializedResult).toMatchInlineSnapshot(`
+    "[
       {
         "name": "db",
         "url": "../cwd/my/folder/dev.db"
       }
-    ]
+    ]"
   `)
 })
 
@@ -99,20 +106,27 @@ test('basic happy path', () => {
   const result = extractSqliteSources(datamodel, '/cwd', '/outputdir')
 
   expect(result).toMatchInlineSnapshot(`
-    Array [
-      Object {
-        name: db,
-        url: ../cwd/my/folder/dev.db,
+    [
+      {
+        "name": "db",
+        "url": "../cwd/my/folder/dev.db",
       },
     ]
   `)
 
-  expect(serializeDatasources(result)).toMatchInlineSnapshot(`
-    [
+  let serializedResult = serializeDatasources(result)
+
+  // TODO: Windows: fixup to work around a bug in jestSnapshotSerializer
+  if (process.platform === 'win32') {
+    serializedResult = serializedResult.replace(/\\\\/g, '/')
+  }
+
+  expect(serializedResult).toMatchInlineSnapshot(`
+    "[
       {
         "name": "db",
         "url": "../cwd/my/folder/dev.db"
       }
-    ]
+    ]"
   `)
 })

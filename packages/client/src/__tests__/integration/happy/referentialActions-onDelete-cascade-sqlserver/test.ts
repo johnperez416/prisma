@@ -1,12 +1,17 @@
 import path from 'path'
+
 import { generateTestClient } from '../../../../utils/getTestClient'
 import { migrateDb } from '../../__helpers__/migrateDb'
 
+const describeIf = (condition: boolean) => (condition ? describe : describe.skip)
+
 let prisma
-describe('referentialActions(postgresql)', () => {
+describeIf(!process.env.TEST_SKIP_MSSQL)('referentialActions(sqlserver)', () => {
   beforeAll(async () => {
+    if (!process.env.TEST_MSSQL_JDBC_URI) {
+      throw new Error('You must set a value for process.env.TEST_MSSQL_JDBC_URI. See TESTING.md')
+    }
     await migrateDb({
-      connectionString: process.env.TEST_MSSQL_JDBC_URI!,
       schemaPath: path.join(__dirname, 'schema.prisma'),
     })
     await generateTestClient()
@@ -40,7 +45,7 @@ describe('referentialActions(postgresql)', () => {
           create: { title: 'Hello Earth' },
         },
         profile: {
-          create: { bio: 'I like pinguins' },
+          create: { bio: 'I like penguins' },
         },
       },
     })
@@ -49,7 +54,7 @@ describe('referentialActions(postgresql)', () => {
     expect(await prisma.profile.findMany()).toHaveLength(2)
     expect(await prisma.post.findMany()).toHaveLength(2)
 
-    const deleteBob = await prisma.user.delete({
+    await prisma.user.delete({
       where: {
         email: 'bob@prisma.io',
       },

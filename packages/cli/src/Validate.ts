@@ -1,8 +1,20 @@
-import type { Command } from '@prisma/sdk'
-import { arg, format, getConfig, getDMMF, getSchemaPath, HelpError } from '@prisma/sdk'
-import chalk from 'chalk'
-import fs from 'fs'
-import path from 'path'
+import path from 'node:path'
+
+import {
+  arg,
+  Command,
+  format,
+  getConfig,
+  getLintWarningsAsText,
+  handleLintPanic,
+  HelpError,
+  lintSchema,
+  loadEnvFile,
+  logger,
+  validate,
+} from '@prisma/internals'
+import { getSchemaPathAndPrint } from '@prisma/migrate'
+import { bold, dim, red, underline } from 'kleur/colors'
 
 /**
  * $ prisma validate
@@ -15,22 +27,22 @@ export class Validate implements Command {
   private static help = format(`
 Validate a Prisma schema.
 
-${chalk.bold('Usage')}
+${bold('Usage')}
 
-  ${chalk.dim('$')} prisma validate [options]
+  ${dim('$')} prisma validate [options]
 
-${chalk.bold('Options')}
+${bold('Options')}
 
   -h, --help   Display this help message
     --schema   Custom path to your Prisma schema
 
-${chalk.bold('Examples')}
+${bold('Examples')}
 
   With an existing Prisma schema
-    ${chalk.dim('$')} prisma validate
+    ${dim('$')} prisma validate
 
   Or specify a Prisma schema path
-    ${chalk.dim('$')} prisma validate --schema=./schema.prisma
+    ${dim('$')} prisma validate --schema=./schema.prisma
 
 `)
 
@@ -50,40 +62,48 @@ ${chalk.bold('Examples')}
       return this.help()
     }
 
-    const schemaPath = await getSchemaPath(args['--schema'])
+    await loadEnvFile({ schemaPath: args['--schema'], printMessage: true })
 
-    if (!schemaPath) {
-      throw new Error(
-        `Could not find a ${chalk.bold(
-          'schema.prisma',
-        )} file that is required for this command.\nYou can either provide it with ${chalk.greenBright(
-          '--schema',
-        )}, set it as \`prisma.schema\` in your package.json or put it into the default location ${chalk.greenBright(
-          './prisma/schema.prisma',
-        )} https://pris.ly/d/prisma-schema-location`,
-      )
+    const { schemaPath, schemas } = await getSchemaPathAndPrint(args['--schema'])
+
+    const { lintDiagnostics } = handleLintPanic(
+      () => {
+        // the only possible error here is a Rust panic
+        const lintDiagnostics = lintSchema({ schemas })
+        return { lintDiagnostics }
+      },
+      { schemas },
+    )
+
+    const lintWarnings = getLintWarningsAsText(lintDiagnostics)
+    if (lintWarnings && logger.should.warn()) {
+      // Output warnings to stderr
+      console.warn(lintWarnings)
     }
 
-    console.log(chalk.dim(`Prisma schema loaded from ${path.relative(process.cwd(), schemaPath)}`))
-
-    const schema = fs.readFileSync(schemaPath, 'utf-8')
-
-    // TODO is the order of getDMMF / getConfig important
-    await getDMMF({
-      datamodel: schema,
+    validate({
+      schemas,
     })
 
+    // We could have a CLI flag to ignore env var validation
     await getConfig({
-      datamodel: schema,
+      datamodel: schemas,
+      ignoreEnvVarErrors: false,
     })
 
-    return `The schema at ${chalk.underline(schemaPath)} is valid 🚀`
+    const schemaRelativePath = path.relative(process.cwd(), schemaPath)
+
+    if (schemas.length > 1) {
+      return `The schemas at ${underline(schemaRelativePath)} are valid 🚀`
+    }
+
+    return `The schema at ${underline(schemaRelativePath)} is valid 🚀`
   }
 
   // help message
   public help(error?: string): string | HelpError {
     if (error) {
-      return new HelpError(`\n${chalk.bold.red(`!`)} ${error}\n${Validate.help}`)
+      return new HelpError(`\n${bold(red(`!`))} ${error}\n${Validate.help}`)
     }
     return Validate.help
   }

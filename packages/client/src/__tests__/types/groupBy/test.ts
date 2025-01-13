@@ -1,8 +1,6 @@
 import { PrismaClient } from '@prisma/client'
 import { expectType } from 'tsd'
 
-// tslint:disable
-
 // This file will not be executed, just compiled to check if the typings are valid
 async function main() {
   const prisma = new PrismaClient({
@@ -26,7 +24,7 @@ async function main() {
       },
     ],
     skip: 0,
-    take: 10000,
+    take: 10_000,
     _avg: {
       age: true,
       avg: true,

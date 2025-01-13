@@ -1,128 +1,105 @@
-import indent from 'indent-string'
-import { DMMF } from '../../runtime/dmmf-types'
-import { getIncludeName, getModelArgName, getSelectName } from '../utils'
-import { TAB_SIZE } from './constants'
-import type { Generatable } from './Generatable'
-import type { ExportCollector } from './helpers'
+import { DMMF } from '../dmmf-types'
+import * as ts from '../ts-builders'
+import { extArgsParam, getIncludeName, getModelArgName, getOmitName, getSelectName } from '../utils'
+import { GenerateContext } from './GenerateContext'
 import { getArgFieldJSDoc } from './helpers'
-import { InputField } from './Input'
+import { buildInputField } from './Input'
 
-export class ArgsType implements Generatable {
+export class ArgsTypeBuilder {
+  private moduleExport: ts.Export<ts.TypeDeclaration<ts.ObjectType>>
+
+  private hasDefaultName = true
+
   constructor(
-    protected readonly args: DMMF.SchemaArg[],
-    protected readonly type: DMMF.OutputType,
-    protected readonly action?: DMMF.ModelAction,
-    protected readonly collector?: ExportCollector,
-  ) {}
-  public toTS(): string {
-    const { action, args } = this
-    const { name } = this.type
-    for (const arg of args) {
-      arg.comment = getArgFieldJSDoc(this.type, action, arg)
-    }
-
-    const selectName = getSelectName(name)
-    this.collector?.addSymbol(selectName)
-
-    const bothArgsOptional: DMMF.SchemaArg[] = [
-      {
-        name: 'select',
-        isRequired: false,
-        isNullable: true,
-        inputTypes: [
-          {
-            type: selectName,
-            location: 'inputObjectTypes',
-            isList: false,
-          },
-          {
-            type: 'null',
-            location: 'scalar',
-            isList: false,
-          },
-        ],
-        comment: `Select specific fields to fetch from the ${name}`,
-      },
-    ]
-
-    const hasRelationField = this.type.fields.some((f) => f.outputType.location === 'outputObjectTypes')
-
-    if (hasRelationField) {
-      const includeName = getIncludeName(name)
-      this.collector?.addSymbol(includeName)
-      bothArgsOptional.push({
-        name: 'include',
-        isRequired: false,
-        isNullable: true,
-        inputTypes: [
-          {
-            type: includeName,
-            location: 'inputObjectTypes',
-            isList: false,
-          },
-          {
-            type: 'null',
-            location: 'scalar',
-            isList: false,
-          },
-        ],
-        comment: `Choose, which related nodes to fetch as well.`,
-      })
-    }
-    const addRejectOnNotFound = action === DMMF.ModelAction.findUnique || action === DMMF.ModelAction.findFirst
-    if (addRejectOnNotFound) {
-      bothArgsOptional.push({
-        name: 'rejectOnNotFound',
-        isRequired: false,
-        isNullable: true,
-        inputTypes: [
-          {
-            type: 'RejectOnNotFound',
-            location: 'scalar',
-            isList: false,
-          },
-        ],
-        comment: `Throw an Error if a ${name} can't be found`,
-      })
-    }
-    bothArgsOptional.push(...args)
-
-    const modelArgName = getModelArgName(name, action)
-    this.collector?.addSymbol(modelArgName)
-
-    return `
-/**
- * ${name} ${action ? action : 'without action'}
- */
-export type ${modelArgName} = {
-${indent(bothArgsOptional.map((arg) => new InputField(arg).toTS()).join('\n'), TAB_SIZE)}
-}
-`
+    private readonly type: DMMF.OutputType,
+    private readonly context: GenerateContext,
+    private readonly action?: DMMF.ModelAction,
+  ) {
+    this.moduleExport = ts
+      .moduleExport(
+        ts.typeDeclaration(getModelArgName(type.name, action), ts.objectType()).addGenericParameter(extArgsParam),
+      )
+      .setDocComment(ts.docComment(`${type.name} ${action ?? 'without action'}`))
   }
-}
 
-export class MinimalArgsType implements Generatable {
-  constructor(
-    protected readonly args: DMMF.SchemaArg[],
-    protected readonly model: DMMF.Model,
-    protected readonly action?: DMMF.ModelAction,
-    protected readonly collector?: ExportCollector,
-  ) {}
-  public toTS(): string {
-    const { action, args } = this
-    const { name } = this.model
+  private addProperty(prop: ts.Property) {
+    this.moduleExport.declaration.type.add(prop)
+  }
 
-    const typeName = getModelArgName(name, action)
+  addSchemaArgs(args: readonly DMMF.SchemaArg[]): this {
+    for (const arg of args) {
+      const inputField = buildInputField(arg, this.context)
 
-    this.collector?.addSymbol(typeName)
+      const docComment = getArgFieldJSDoc(this.type, this.action, arg)
+      if (docComment) {
+        inputField.setDocComment(ts.docComment(docComment))
+      }
+      this.addProperty(inputField)
+    }
+    return this
+  }
 
-    return `
-/**
- * ${name} ${action ? action : 'without action'}
- */
-export type ${typeName} = {
-${indent(args.map((arg) => new InputField(arg).toTS()).join('\n'), TAB_SIZE)}
-}
-`
+  addSelectArg(selectTypeName: string = getSelectName(this.type.name)): this {
+    this.addProperty(
+      ts
+        .property(
+          'select',
+          ts.unionType([ts.namedType(selectTypeName).addGenericArgument(extArgsParam.toArgument()), ts.nullType]),
+        )
+        .optional()
+        .setDocComment(ts.docComment(`Select specific fields to fetch from the ${this.type.name}`)),
+    )
+
+    return this
+  }
+
+  addIncludeArgIfHasRelations(includeTypeName = getIncludeName(this.type.name), type = this.type): this {
+    const hasRelationField = type.fields.some((f) => f.outputType.location === 'outputObjectTypes')
+    if (!hasRelationField) {
+      return this
+    }
+
+    this.addProperty(
+      ts
+        .property(
+          'include',
+          ts.unionType([ts.namedType(includeTypeName).addGenericArgument(extArgsParam.toArgument()), ts.nullType]),
+        )
+        .optional()
+        .setDocComment(ts.docComment('Choose, which related nodes to fetch as well')),
+    )
+
+    return this
+  }
+
+  addOmitArg(): this {
+    this.addProperty(
+      ts
+        .property(
+          'omit',
+          ts.unionType([
+            ts.namedType(getOmitName(this.type.name)).addGenericArgument(extArgsParam.toArgument()),
+            ts.nullType,
+          ]),
+        )
+        .optional()
+        .setDocComment(ts.docComment(`Omit specific fields from the ${this.type.name}`)),
+    )
+    return this
+  }
+
+  setGeneratedName(name: string): this {
+    this.hasDefaultName = false
+    this.moduleExport.declaration.setName(name)
+    return this
+  }
+
+  setComment(comment: string): this {
+    this.moduleExport.setDocComment(ts.docComment(comment))
+    return this
+  }
+
+  createExport() {
+    return this.moduleExport
   }
 }

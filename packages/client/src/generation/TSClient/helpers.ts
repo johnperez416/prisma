@@ -1,7 +1,7 @@
 import pluralize from 'pluralize'
-import { DMMF } from '../../runtime/dmmf-types'
-import { capitalize, lowerCase } from '../../runtime/utils/common'
-import { getAggregateArgsName, getModelArgName, unique } from '../utils'
+
+import { DMMF } from '../dmmf-types'
+import { capitalize, lowerCase } from '../utils/common'
 import type { JSDocMethodBodyCtx } from './jsdoc'
 import { JSDocs } from './jsdoc'
 
@@ -23,41 +23,7 @@ export function getMethodJSDocBody(action: DMMF.ModelAction, mapping: DMMF.Model
 export function getMethodJSDoc(action: DMMF.ModelAction, mapping: DMMF.ModelMapping, model: DMMF.Model): string {
   return wrapComment(getMethodJSDocBody(action, mapping, model))
 }
-export function getGenericMethod(name: string, actionName: DMMF.ModelAction) {
-  if (actionName === 'count') {
-    return ''
-  }
-  if (actionName === 'aggregate') {
-    return `<T extends ${getAggregateArgsName(name)}>`
-  }
-  if (actionName === 'findFirst' || actionName === 'findUnique') {
-    return `<T extends ${getModelArgName(
-      name,
-      actionName,
-    )},  LocalRejectSettings = T["rejectOnNotFound"] extends RejectOnNotFound ? T['rejectOnNotFound'] : undefined>`
-  }
-  const modelArgName = getModelArgName(name, actionName)
-  if (!modelArgName) {
-    console.log({ name, actionName })
-  }
-  return `<T extends ${modelArgName}>`
-}
-export function getArgs(name: string, actionName: DMMF.ModelAction) {
-  if (actionName === 'count') {
-    return `args?: Omit<${getModelArgName(name, DMMF.ModelAction.findMany)}, 'select' | 'include'>`
-  }
-  if (actionName === 'aggregate') {
-    return `args: Subset<T, ${getAggregateArgsName(name)}>`
-  }
-  return `args${
-    actionName === DMMF.ModelAction.findMany ||
-    actionName === DMMF.ModelAction.findFirst ||
-    actionName === DMMF.ModelAction.deleteMany ||
-    actionName === DMMF.ModelAction.createMany
-      ? '?'
-      : ''
-  }: SelectSubset<T, ${getModelArgName(name, actionName)}>`
-}
+
 export function wrapComment(str: string): string {
   return `/**\n${str
     .split('\n')
@@ -83,14 +49,4 @@ export function getArgFieldJSDoc(
 
 export function escapeJson(str: string): string {
   return str.replace(/\\n/g, '\\\\n').replace(/\\r/g, '\\\\r').replace(/\\t/g, '\\\\t')
-}
-
-export class ExportCollector {
-  symbols: string[] = []
-  addSymbol(symbol: string) {
-    this.symbols.push(symbol)
-  }
-  getSymbols() {
-    return unique(this.symbols)
-  }
 }

@@ -1,7 +1,6 @@
 import { expectError } from 'tsd'
-import { PrismaClient } from '.'
 
-// tslint:disable
+import { PrismaClient } from '.'
 
 const prisma = new PrismaClient({
   datasources: {
@@ -26,7 +25,7 @@ const prisma = new PrismaClient({
         },
       ],
       skip: 0,
-      take: 10000,
+      take: 10_000,
     }),
   )
 
@@ -47,7 +46,7 @@ const prisma = new PrismaClient({
         },
       },
       skip: 0,
-      take: 10000,
+      take: 10_000,
     }),
   )
 
@@ -73,7 +72,7 @@ const prisma = new PrismaClient({
           gt: -1,
         },
       },
-      take: 10000,
+      take: 10_000,
     }),
   )
 
@@ -89,7 +88,7 @@ const prisma = new PrismaClient({
           gt: -1,
         },
       },
-      take: 10000,
+      take: 10_000,
     }),
   )
 

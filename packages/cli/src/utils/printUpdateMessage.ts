@@ -1,6 +1,6 @@
-import { drawBox, isCurrentBinInstalledGlobally, logger } from '@prisma/sdk'
-import chalk from 'chalk'
+import { drawBox, isCurrentBinInstalledGlobally } from '@prisma/internals'
 import type { Check } from 'checkpoint-client'
+import { blue, bold } from 'kleur/colors'
 
 const isPrismaInstalledGlobally = isCurrentBinInstalledGlobally()
 
@@ -27,11 +27,11 @@ export function printUpdateMessage(checkResult: { status: 'ok'; data: Check.Resp
     }
   } catch (e) {}
 
-  const boxText = `\n${chalk.blue(
+  const boxText = `\n${blue(
     'Update available',
   )} ${currentVersionInstalled} -> ${latestVersionAvailable}\n${majorText}Run the following to update
-  ${chalk.bold(prismaCLICommand)}
-  ${chalk.bold(prismaClientCommand)}`
+  ${bold(prismaCLICommand)}
+  ${bold(prismaClientCommand)}`
 
   const boxedMessage = drawBox({
     height: boxHeight,
@@ -51,22 +51,11 @@ function makeInstallCommand(
     canBeDev: true,
   },
 ): string {
-  // Examples
-  // yarn 'yarn/1.22.4 npm/? node/v12.14.1 darwin x64'
-  // npm 'npm/6.14.7 node/v12.14.1 darwin x64'
-  const yarnUsed = process.env.npm_config_user_agent?.includes('yarn')
-
   let command = ''
-  if (isPrismaInstalledGlobally === 'yarn' && options.canBeGlobal) {
-    command = `yarn global add ${packageName}`
-  } else if (isPrismaInstalledGlobally === 'npm' && options.canBeGlobal) {
+  if (isPrismaInstalledGlobally === 'npm' && options.canBeGlobal) {
     command = `npm i -g ${packageName}`
-  } else if (yarnUsed && options.canBeDev) {
-    command = `yarn add --dev ${packageName}`
   } else if (options.canBeDev) {
     command = `npm i --save-dev ${packageName}`
-  } else if (yarnUsed) {
-    command = `yarn add ${packageName}`
   } else {
     command = `npm i ${packageName}`
   }

@@ -1,13 +1,14 @@
-import { consoleContext, Context } from './__helpers__/context'
+import { jestContext, jestProcessContext } from '@prisma/get-platform'
+import { loadEnvFile } from '@prisma/internals'
 
-const ctx = Context.new().add(consoleContext()).assemble()
+const ctx = jestContext.new().add(jestProcessContext()).assemble()
 
 it('should read expanded env vars', async () => {
   ctx.fixture('dotenv-6-expand')
-  process.argv.push('--version')
-  process.argv.push('--schema=./expand/schema.prisma')
-  await import('../bin')
-  expect(ctx.mocked['console.log'].mock.calls.join('\n')).toMatchSnapshot()
+  await loadEnvFile({ schemaPath: './expand/schema.prisma', printMessage: true })
+
+  expect(ctx.mocked['process.stdout.write'].mock.calls.join('\n')).toMatchSnapshot()
+
   expect(process.env.DOTENV_PRISMA_EXPAND_DATABASE_URL_WITH_SCHEMA).toEqual(
     'postgres://user:password@server.host:5432/database?ssl=1&schema=schema1234',
   )

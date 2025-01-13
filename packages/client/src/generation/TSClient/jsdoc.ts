@@ -1,6 +1,7 @@
 import type { DMMF } from '@prisma/generator-helper'
-import { capitalize, lowerCase } from '../../runtime/utils/common'
+
 import { getGroupByArgsName, getModelArgName } from '../utils'
+import { capitalize, lowerCase } from '../utils/common'
 
 export interface JSDocMethodBodyCtx {
   singular: string
@@ -92,15 +93,44 @@ const ${ctx.singular} = await ${ctx.method}({
   },
   createMany: {
     body: (ctx) => `Create many ${ctx.plural}.
-    @param {${getModelArgName(ctx.model.name, ctx.action)}} args - Arguments to create many ${ctx.plural}.
-    @example
-    // Create many ${ctx.plural}
-    const ${lowerCase(ctx.mapping.model)} = await ${ctx.method}({
-      data: {
-        // ... provide data here
-      }
-    })
+@param {${getModelArgName(ctx.model.name, ctx.action)}} args - Arguments to create many ${ctx.plural}.
+@example
+// Create many ${ctx.plural}
+const ${lowerCase(ctx.mapping.model)} = await ${ctx.method}({
+  data: [
+    // ... provide data here
+  ]
+})
     `,
+    fields: {
+      data: (singular, plural) => `The data used to create many ${plural}.`,
+    },
+  },
+  createManyAndReturn: {
+    body: (ctx) => {
+      const onlySelect = ctx.firstScalar
+        ? `\n// Create many ${ctx.plural} and only return the \`${ctx.firstScalar.name}\`
+const ${lowerCase(ctx.mapping.model)}With${capitalize(ctx.firstScalar.name)}Only = await ${ctx.method}({
+  select: { ${ctx.firstScalar.name}: true },
+  data: [
+    // ... provide data here
+  ]
+})`
+        : ''
+
+      return `Create many ${ctx.plural} and returns the data saved in the database.
+@param {${getModelArgName(ctx.model.name, ctx.action)}} args - Arguments to create many ${ctx.plural}.
+@example
+// Create many ${ctx.plural}
+const ${lowerCase(ctx.mapping.model)} = await ${ctx.method}({
+  data: [
+    // ... provide data here
+  ]
+})
+${onlySelect}
+${undefinedNote}
+`
+    },
     fields: {
       data: (singular, plural) => `The data used to create many ${plural}.`,
     },
@@ -108,6 +138,22 @@ const ${ctx.singular} = await ${ctx.method}({
   findUnique: {
     body: (ctx) =>
       `Find zero or one ${ctx.singular} that matches the filter.
+@param {${getModelArgName(ctx.model.name, ctx.action)}} args - Arguments to find a ${ctx.singular}
+@example
+// Get one ${ctx.singular}
+const ${lowerCase(ctx.mapping.model)} = await ${ctx.method}({
+  where: {
+    // ... provide filter here
+  }
+})`,
+    fields: {
+      where: (singular) => `Filter, which ${singular} to fetch.`,
+    },
+  },
+  findUniqueOrThrow: {
+    body: (ctx) =>
+      `Find one ${ctx.singular} that matches the filter or throw an error with \`error.code='P2025'\`
+if no matches were found.
 @param {${getModelArgName(ctx.model.name, ctx.action)}} args - Arguments to find a ${ctx.singular}
 @example
 // Get one ${ctx.singular}
@@ -141,6 +187,28 @@ const ${lowerCase(ctx.mapping.model)} = await ${ctx.method}({
       distinct: JSDocFields.distinct,
     },
   },
+  findFirstOrThrow: {
+    body: (ctx) =>
+      `Find the first ${ctx.singular} that matches the filter or
+throw \`PrismaKnownClientError\` with \`P2025\` code if no matches were found.
+${undefinedNote}
+@param {${getModelArgName(ctx.model.name, ctx.action)}} args - Arguments to find a ${ctx.singular}
+@example
+// Get one ${ctx.singular}
+const ${lowerCase(ctx.mapping.model)} = await ${ctx.method}({
+  where: {
+    // ... provide filter here
+  }
+})`,
+    fields: {
+      where: (singular) => `Filter, which ${singular} to fetch.`,
+      orderBy: JSDocFields.orderBy,
+      cursor: (singular, plural) => addLinkToDocs(`Sets the position for searching for ${plural}.`, 'cursor'),
+      take: JSDocFields.take,
+      skip: JSDocFields.skip,
+      distinct: JSDocFields.distinct,
+    },
+  },
   findMany: {
     body: (ctx) => {
       const onlySelect = ctx.firstScalar
@@ -152,7 +220,7 @@ const ${lowerCase(ctx.mapping.model)}With${capitalize(ctx.firstScalar.name)}Only
 
       return `Find zero or more ${ctx.plural} that matches the filter.
 ${undefinedNote}
-@param {${getModelArgName(ctx.model.name, ctx.action)}=} args - Arguments to filter and select certain fields only.
+@param {${getModelArgName(ctx.model.name, ctx.action)}} args - Arguments to filter and select certain fields only.
 @example
 // Get all ${ctx.plural}
 const ${ctx.mapping.plural} = await ${ctx.method}()
@@ -308,6 +376,44 @@ const ${lowerCase(ctx.mapping.model)} = await ${ctx.method}({
     fields: {
       data: (singular, plural) => `The data used to update ${plural}.`,
       where: (singular, plural) => `Filter which ${plural} to update`,
+      limit: (singular, plural) => `Limit how many ${plural} to update.`,
+    },
+  },
+  updateManyAndReturn: {
+    body: (ctx) => {
+      const onlySelect = ctx.firstScalar
+        ? `\n// Update zero or more ${ctx.plural} and only return the \`${ctx.firstScalar.name}\`
+const ${lowerCase(ctx.mapping.model)}With${capitalize(ctx.firstScalar.name)}Only = await ${ctx.method}({
+  select: { ${ctx.firstScalar.name}: true },
+  where: {
+    // ... provide filter here
+  },
+  data: [
+    // ... provide data here
+  ]
+})`
+        : ''
+
+      return `Update zero or more ${ctx.plural} and returns the data updated in the database.
+@param {${getModelArgName(ctx.model.name, ctx.action)}} args - Arguments to update many ${ctx.plural}.
+@example
+// Update many ${ctx.plural}
+const ${lowerCase(ctx.mapping.model)} = await ${ctx.method}({
+  where: {
+    // ... provide filter here
+  },
+  data: [
+    // ... provide data here
+  ]
+})
+${onlySelect}
+${undefinedNote}
+`
+    },
+    fields: {
+      data: (singular, plural) => `The data used to update ${plural}.`,
+      where: (singular, plural) => `Filter which ${plural} to update`,
+      limit: (singular, plural) => `Limit how many ${plural} to update.`,
     },
   },
   deleteMany: {
@@ -324,6 +430,40 @@ const { count } = await ${ctx.method}({
 `,
     fields: {
       where: (singular, plural) => `Filter which ${plural} to delete`,
+      limit: (singular, plural) => `Limit how many ${plural} to delete.`,
+    },
+  },
+  aggregateRaw: {
+    body: (ctx) =>
+      `Perform aggregation operations on a ${ctx.singular}.
+@param {${getModelArgName(ctx.model.name, ctx.action)}} args - Select which aggregations you would like to apply.
+@example
+const ${lowerCase(ctx.mapping.model)} = await ${ctx.method}({
+  pipeline: [
+    { $match: { status: "registered" } },
+    { $group: { _id: "$country", total: { $sum: 1 } } }
+  ]
+})`,
+    fields: {
+      pipeline: () =>
+        'An array of aggregation stages to process and transform the document stream via the aggregation pipeline. ${@link https://docs.mongodb.com/manual/reference/operator/aggregation-pipeline MongoDB Docs}.',
+      options: () =>
+        'Additional options to pass to the `aggregate` command ${@link https://docs.mongodb.com/manual/reference/command/aggregate/#command-fields MongoDB Docs}.',
+    },
+  },
+  findRaw: {
+    body: (ctx) =>
+      `Find zero or more ${ctx.plural} that matches the filter.
+@param {${getModelArgName(ctx.model.name, ctx.action)}} args - Select which filters you would like to apply.
+@example
+const ${lowerCase(ctx.mapping.model)} = await ${ctx.method}({
+  filter: { age: { $gt: 25 } }
+})`,
+    fields: {
+      filter: () =>
+        'The query predicate filter. If unspecified, then all documents in the collection will match the predicate. ${@link https://docs.mongodb.com/manual/reference/operator/query MongoDB Docs}.',
+      options: () =>
+        'Additional options to pass to the `find` command ${@link https://docs.mongodb.com/manual/reference/command/find/#command-fields MongoDB Docs}.',
     },
   },
 }

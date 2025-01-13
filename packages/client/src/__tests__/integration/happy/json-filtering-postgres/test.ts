@@ -1,20 +1,24 @@
 import path from 'path'
+
 import { generateTestClient } from '../../../../utils/getTestClient'
 import { tearDownPostgres } from '../../../../utils/setupPostgres'
 import { migrateDb } from '../../__helpers__/migrateDb'
-
 // @ts-ignore trick to get typings at dev time
-import type { PrismaClient, Prisma } from './node_modules/.prisma/client'
+import type { Prisma, PrismaClient } from './node_modules/.prisma/client'
 
 let prisma: PrismaClient
 let PrismaUtil: typeof Prisma
-const baseUri = process.env.TEST_POSTGRES_URI
+
+const isMacOrWindowsCI = Boolean(process.env.CI) && ['darwin', 'win32'].includes(process.platform)
+if (isMacOrWindowsCI) {
+  jest.setTimeout(100_000)
+}
+
 describe('json-filtering(postgres)', () => {
   beforeAll(async () => {
-    process.env.TEST_POSTGRES_URI += '-json-filtering'
-    await tearDownPostgres(process.env.TEST_POSTGRES_URI!)
+    process.env.DATABASE_URL = process.env.TEST_POSTGRES_URI!.replace('tests', 'tests-json-filtering')
+    await tearDownPostgres(process.env.DATABASE_URL)
     await migrateDb({
-      connectionString: process.env.TEST_POSTGRES_URI!,
       schemaPath: path.join(__dirname, 'schema.prisma'),
     })
     await generateTestClient()
@@ -59,7 +63,6 @@ describe('json-filtering(postgres)', () => {
   afterAll(async () => {
     await prisma.user.deleteMany()
     await prisma.$disconnect()
-    process.env.TEST_POSTGRES_URI = baseUri
   })
 
   test('lt(2)', async () => {
