@@ -1,9 +1,9 @@
-import type { Command } from '@prisma/sdk'
-import { arg, format, formatms, formatSchema, getDMMF, getSchemaPath, HelpError } from '@prisma/sdk'
-import chalk from 'chalk'
-import fs from 'fs'
-import os from 'os'
-import path from 'path'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+
+import { arg, Command, format, formatms, formatSchema, HelpError, validate } from '@prisma/internals'
+import { getSchemaPathAndPrint } from '@prisma/migrate'
+import { bold, dim, red, underline } from 'kleur/colors'
 
 /**
  * $ prisma format
@@ -16,32 +16,33 @@ export class Format implements Command {
   private static help = format(`
 Format a Prisma schema.
 
-${chalk.bold('Usage')}
+${bold('Usage')}
 
-  ${chalk.dim('$')} prisma format [options]
+  ${dim('$')} prisma format [options]
 
-${chalk.bold('Options')}
+${bold('Options')}
 
   -h, --help   Display this help message
     --schema   Custom path to your Prisma schema
 
-${chalk.bold('Examples')}
+${bold('Examples')}
 
 With an existing Prisma schema
-  ${chalk.dim('$')} prisma format
+  ${dim('$')} prisma format
 
 Or specify a Prisma schema path
-  ${chalk.dim('$')} prisma format --schema=./schema.prisma
+  ${dim('$')} prisma format --schema=./schema.prisma
 
   `)
 
   public async parse(argv: string[]): Promise<string | Error> {
-    const before = Date.now()
+    const before = Math.round(performance.now())
     const args = arg(argv, {
       '--help': Boolean,
       '-h': '--help',
       '--schema': String,
       '--telemetry-information': String,
+      '--check': Boolean,
     })
 
     if (args instanceof Error) {
@@ -52,41 +53,44 @@ Or specify a Prisma schema path
       return this.help()
     }
 
-    const schemaPath = await getSchemaPath(args['--schema'])
+    const { schemaPath, schemas } = await getSchemaPathAndPrint(args['--schema'])
 
-    if (!schemaPath) {
-      throw new Error(
-        `Could not find a ${chalk.bold(
-          'schema.prisma',
-        )} file that is required for this command.\nYou can either provide it with ${chalk.greenBright(
-          '--schema',
-        )}, set it as \`prisma.schema\` in your package.json or put it into the default location ${chalk.greenBright(
-          './prisma/schema.prisma',
-        )} https://pris.ly/d/prisma-schema-location`,
-      )
+    const formattedDatamodel = await formatSchema({ schemas })
+
+    // Validate whether the formatted output is a valid schema
+    validate({
+      schemas: formattedDatamodel,
+    })
+
+    if (args['--check']) {
+      for (const [filename, formattedSchema] of formattedDatamodel) {
+        const originalSchemaTuple = schemas.find((s) => s[0] === filename)
+        if (!originalSchemaTuple) {
+          return new HelpError(`${bold(red(`!`))} The schema ${underline(filename)} is not found in the schema list.`)
+        }
+        const [, originalSchema] = originalSchemaTuple
+        if (originalSchema !== formattedSchema) {
+          return new HelpError(
+            `${bold(red(`!`))} There are unformatted files. Run ${underline('prisma format')} to format them.`,
+          )
+        }
+      }
+      return 'All files are formatted correctly!'
     }
 
-    console.log(chalk.dim(`Prisma schema loaded from ${path.relative(process.cwd(), schemaPath)}`))
+    for (const [filename, data] of formattedDatamodel) {
+      await fs.writeFile(filename, data)
+    }
 
-    let output = await formatSchema({
-      schemaPath,
-    })
+    const after = Math.round(performance.now())
+    const schemaRelativePath = path.relative(process.cwd(), schemaPath)
 
-    await getDMMF({
-      datamodel: output,
-    })
-
-    output = output.trimEnd() + os.EOL
-
-    fs.writeFileSync(schemaPath, output)
-    const after = Date.now()
-
-    return `Formatted ${chalk.underline(schemaPath)} in ${formatms(after - before)} 🚀`
+    return `Formatted ${underline(schemaRelativePath)} in ${formatms(after - before)} 🚀`
   }
 
   public help(error?: string): string | HelpError {
     if (error) {
-      return new HelpError(`\n${chalk.bold.red(`!`)} ${error}\n${Format.help}`)
+      return new HelpError(`\n${bold(red(`!`))} ${error}\n${Format.help}`)
     }
     return Format.help
   }

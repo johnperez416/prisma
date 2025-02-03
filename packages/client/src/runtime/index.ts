@@ -1,27 +1,44 @@
-export { DMMF } from './dmmf-types'
-export { DMMFClass } from './dmmf'
-export { makeDocument, transformDocument, unpack, PrismaClientValidationError } from './query'
+import * as Extensions from './core/extensions'
+import * as Public from './core/public'
+import * as Types from './core/types'
 
+export { type Types }
+export { Extensions }
+export { Public }
+
+export { type BaseDMMF, type DMMF } from '../generation/dmmf-types'
+export { type JsonBatchQuery, type JsonQuery } from './core/engines'
+export { PrismaClientInitializationError } from './core/errors/PrismaClientInitializationError'
+export { PrismaClientKnownRequestError } from './core/errors/PrismaClientKnownRequestError'
+export { PrismaClientRustPanicError } from './core/errors/PrismaClientRustPanicError'
+export { PrismaClientUnknownRequestError } from './core/errors/PrismaClientUnknownRequestError'
+export { PrismaClientValidationError } from './core/errors/PrismaClientValidationError'
+export { deserializeJsonResponse } from './core/jsonProtocol/deserializeJsonResponse'
+export { serializeJsonQuery } from './core/jsonProtocol/serializeJsonQuery'
 export {
-  Engine,
-  PrismaClientKnownRequestError,
-  PrismaClientUnknownRequestError,
-  PrismaClientInitializationError,
-  PrismaClientRustPanicError,
-} from '@prisma/engine-core'
-export { getPrismaClient } from './getPrismaClient'
+  type Metric,
+  type MetricHistogram,
+  type MetricHistogramBucket,
+  type Metrics,
+  MetricsClient,
+} from './core/metrics/MetricsClient'
+export { createParam } from './core/model/Param'
+export { dmmfToRuntimeDataModel, type RuntimeDataModel } from './core/runtimeDataModel'
+export { defineDmmfProperty } from './core/runtimeDataModel'
+export type * from './core/types/exported'
+export type { ITXClientDenyList } from './core/types/exported/itxClientDenyList'
+export { objectEnumValues } from './core/types/exported/ObjectEnums'
+export { skip } from './core/types/exported/Skip'
+export { makeTypedQueryFactory } from './core/types/exported/TypedSql'
 export type { PrismaClientOptions } from './getPrismaClient'
-
-export { Sql, empty, join, raw, sqltag } from 'sql-template-tag'
-export type { RawValue, Value } from 'sql-template-tag'
-
+export { getPrismaClient } from './getPrismaClient'
+export { makeStrictEnum } from './strictEnum'
+export { deserializeRawResult } from './utils/deserializeRawResults'
+export { getRuntime } from './utils/getRuntime'
 export { warnEnvConflicts } from './warnEnvConflicts'
-
+export { Debug } from '@prisma/debug'
+export type { DriverAdapter } from '@prisma/driver-adapter-utils'
+export { warnOnce } from '@prisma/internals'
 export { default as Decimal } from 'decimal.js'
-
-export { findSync } from './utils/find'
-
-import * as lzString from 'lz-string'
-// ! export bundling fails for this dep, we work around it
-const decompressFromBase64 = lzString.decompressFromBase64
-export { decompressFromBase64 }
+export type { RawValue, Value } from 'sql-template-tag'
+export { empty, join, raw, Sql, default as sqltag } from 'sql-template-tag'

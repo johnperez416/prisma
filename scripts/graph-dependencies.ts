@@ -1,11 +1,9 @@
 import { readdirSync, statSync } from 'fs'
-import { digraph } from 'graphviz'
+import { digraph } from 'graphviz-mit'
 import { join } from 'path'
 
 const getDirectories = (path: string) => {
-  const packages = readdirSync(path).filter((any) =>
-    statSync(join(path, any)).isDirectory(),
-  )
+  const packages = readdirSync(path).filter((any) => statSync(join(path, any)).isDirectory())
   const result = packages.map((pkg) => ({
     dirName: pkg,
     path: join('..', path, pkg),
@@ -16,6 +14,7 @@ const getDirectories = (path: string) => {
 
 const getKeys = (obj: any, name) => {
   if (obj && obj[name]) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     return Object.keys(obj[name]).filter((name) => name.includes('prisma'))
   }
   return []
@@ -35,7 +34,7 @@ function generateGraph(
       const json = require(pkg.jsonPath)
       g.addNode(json.name, { shape: 'box' })
       const keys = getKeys(json, type)
-      const depNodes = keys.map((key) => {
+      keys.forEach((key) => {
         g.addEdge(json.name, key, {})
       })
     } catch {}

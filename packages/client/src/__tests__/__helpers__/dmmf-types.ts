@@ -1,5 +1,6 @@
 import { DMMF } from '@prisma/generator-helper'
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const dmmf: DMMF.Document = {
   datamodel: {
     enums: [],
@@ -144,6 +145,7 @@ const dmmf: DMMF.Document = {
         uniqueIndexes: [],
       },
     ],
+    types: [],
   },
   mappings: {
     modelOperations: [
@@ -151,6 +153,7 @@ const dmmf: DMMF.Document = {
         aggregate: 'aggregatePost',
         create: 'createOnePost',
         createMany: 'createManyPost',
+        createManyAndReturn: 'createManyPostAndReturn',
         delete: 'deleteOnePost',
         deleteMany: 'deleteManyPost',
         findFirst: 'findFirstPost',
@@ -161,6 +164,7 @@ const dmmf: DMMF.Document = {
         plural: 'posts',
         update: 'updateOnePost',
         updateMany: 'updateManyPost',
+        updateManyAndReturn: 'updateManyPostAndReturn',
         upsert: 'upsertOnePost',
       },
       {
@@ -1108,6 +1112,19 @@ const dmmf: DMMF.Document = {
               inputTypes: [
                 {
                   isList: false,
+                  location: 'inputObjectTypes',
+                  namespace: 'prisma',
+                  type: 'UserCreateNestedOneWithoutPostsInput',
+                },
+              ],
+              isNullable: false,
+              isRequired: true,
+              name: 'author',
+            },
+            {
+              inputTypes: [
+                {
+                  isList: false,
                   location: 'scalar',
                   type: 'String',
                 },
@@ -1127,19 +1144,6 @@ const dmmf: DMMF.Document = {
               isNullable: false,
               isRequired: false,
               name: 'published',
-            },
-            {
-              inputTypes: [
-                {
-                  isList: false,
-                  location: 'inputObjectTypes',
-                  namespace: 'prisma',
-                  type: 'UserCreateNestedOneWithoutPostsInput',
-                },
-              ],
-              isNullable: false,
-              isRequired: true,
-              name: 'author',
             },
           ],
           name: 'PostCreateInput',
@@ -1211,6 +1215,19 @@ const dmmf: DMMF.Document = {
               inputTypes: [
                 {
                   isList: false,
+                  location: 'inputObjectTypes',
+                  namespace: 'prisma',
+                  type: 'UserUpdateOneRequiredWithoutPostsNestedInput',
+                },
+              ],
+              isNullable: false,
+              isRequired: false,
+              name: 'author',
+            },
+            {
+              inputTypes: [
+                {
+                  isList: false,
                   location: 'scalar',
                   type: 'String',
                 },
@@ -1242,19 +1259,6 @@ const dmmf: DMMF.Document = {
               isNullable: false,
               isRequired: false,
               name: 'published',
-            },
-            {
-              inputTypes: [
-                {
-                  isList: false,
-                  location: 'inputObjectTypes',
-                  namespace: 'prisma',
-                  type: 'UserUpdateOneRequiredWithoutPostsInput',
-                },
-              ],
-              isNullable: false,
-              isRequired: false,
-              name: 'author',
             },
           ],
           name: 'PostUpdateInput',
@@ -1633,7 +1637,7 @@ const dmmf: DMMF.Document = {
                   isList: false,
                   location: 'inputObjectTypes',
                   namespace: 'prisma',
-                  type: 'PostUpdateManyWithoutAuthorInput',
+                  type: 'PostUpdateManyWithoutAuthorNestedInput',
                 },
               ],
               isNullable: false,
@@ -1691,7 +1695,7 @@ const dmmf: DMMF.Document = {
                   isList: false,
                   location: 'inputObjectTypes',
                   namespace: 'prisma',
-                  type: 'PostUncheckedUpdateManyWithoutAuthorInput',
+                  type: 'PostUncheckedUpdateManyWithoutAuthorNestedInput',
                 },
               ],
               isNullable: false,
@@ -3132,48 +3136,6 @@ const dmmf: DMMF.Document = {
         },
         {
           constraints: {
-            maxNumFields: 1,
-            minNumFields: 1,
-          },
-          fields: [
-            {
-              inputTypes: [
-                {
-                  isList: false,
-                  location: 'scalar',
-                  type: 'String',
-                },
-              ],
-              isNullable: false,
-              isRequired: false,
-              name: 'set',
-            },
-          ],
-          name: 'StringFieldUpdateOperationsInput',
-        },
-        {
-          constraints: {
-            maxNumFields: 1,
-            minNumFields: 1,
-          },
-          fields: [
-            {
-              inputTypes: [
-                {
-                  isList: false,
-                  location: 'scalar',
-                  type: 'Boolean',
-                },
-              ],
-              isNullable: false,
-              isRequired: false,
-              name: 'set',
-            },
-          ],
-          name: 'BoolFieldUpdateOperationsInput',
-        },
-        {
-          constraints: {
             maxNumFields: null,
             minNumFields: null,
           },
@@ -3256,7 +3218,49 @@ const dmmf: DMMF.Document = {
               name: 'update',
             },
           ],
-          name: 'UserUpdateOneRequiredWithoutPostsInput',
+          name: 'UserUpdateOneRequiredWithoutPostsNestedInput',
+        },
+        {
+          constraints: {
+            maxNumFields: 1,
+            minNumFields: 1,
+          },
+          fields: [
+            {
+              inputTypes: [
+                {
+                  isList: false,
+                  location: 'scalar',
+                  type: 'String',
+                },
+              ],
+              isNullable: false,
+              isRequired: false,
+              name: 'set',
+            },
+          ],
+          name: 'StringFieldUpdateOperationsInput',
+        },
+        {
+          constraints: {
+            maxNumFields: 1,
+            minNumFields: 1,
+          },
+          fields: [
+            {
+              inputTypes: [
+                {
+                  isList: false,
+                  location: 'scalar',
+                  type: 'Boolean',
+                },
+              ],
+              isNullable: false,
+              isRequired: false,
+              name: 'set',
+            },
+          ],
+          name: 'BoolFieldUpdateOperationsInput',
         },
         {
           constraints: {
@@ -3731,7 +3735,7 @@ const dmmf: DMMF.Document = {
               name: 'deleteMany',
             },
           ],
-          name: 'PostUpdateManyWithoutAuthorInput',
+          name: 'PostUpdateManyWithoutAuthorNestedInput',
         },
         {
           constraints: {
@@ -3955,7 +3959,7 @@ const dmmf: DMMF.Document = {
               name: 'deleteMany',
             },
           ],
-          name: 'PostUncheckedUpdateManyWithoutAuthorInput',
+          name: 'PostUncheckedUpdateManyWithoutAuthorNestedInput',
         },
         {
           constraints: {
@@ -5840,7 +5844,7 @@ const dmmf: DMMF.Document = {
             },
             {
               args: [],
-              isNullable: true,
+              isNullable: false,
               name: '_count',
               outputType: {
                 isList: false,

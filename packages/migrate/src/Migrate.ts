@@ -1,50 +1,54 @@
-import { getGeneratorSuccessMessage, getSchemaPathSync, getGenerators } from '@prisma/sdk'
-import chalk from 'chalk'
-import Debug from '@prisma/debug'
-import fs from 'fs'
+import { enginesVersion } from '@prisma/engines-version'
+import {
+  getGenerators,
+  getGeneratorSuccessMessage,
+  type GetSchemaResult,
+  getSchemaWithPath,
+  isPrismaPostgres,
+  toSchemasContainer,
+} from '@prisma/internals'
+import { dim } from 'kleur/colors'
 import logUpdate from 'log-update'
 import path from 'path'
-import { MigrateEngine } from './MigrateEngine'
-import type { EngineResults, EngineArgs } from './types'
-import { enginesVersion } from '@prisma/engines-version'
-import { NoSchemaFoundError } from './utils/errors'
 
-const debug = Debug('prisma:migrate')
-const packageJson = eval(`require('../package.json')`) // tslint:disable-line
+import { SchemaEngine } from './SchemaEngine'
+import type { EngineArgs, EngineResults } from './types'
+import { DatasourceInfo } from './utils/ensureDatabaseExists'
+
+// TODO: `eval` is used so that the `version` field in package.json (resolved at compile-time) doesn't yield `0.0.0`.
+// We should mark this bit as `external` during the build, so that we can get rid of `eval` and still import the JSON we need at runtime.
+const packageJson = eval(`require('../package.json')`)
 
 export class Migrate {
-  get devMigrationsDir(): string {
-    return path.join(path.dirname(this.schemaPath), 'migrations/dev')
-  }
-  public engine: MigrateEngine
-  private schemaPath: string
-  public migrationsDirectoryPath: string
+  public engine: SchemaEngine
+  private schemaPath?: string
+  public migrationsDirectoryPath?: string
+
   constructor(schemaPath?: string, enabledPreviewFeatures?: string[]) {
-    this.schemaPath = this.getSchemaPath(schemaPath)
-    this.migrationsDirectoryPath = path.join(path.dirname(this.schemaPath), 'migrations')
-    this.engine = new MigrateEngine({
-      projectDir: path.dirname(this.schemaPath),
-      schemaPath: this.schemaPath,
-      enabledPreviewFeatures,
-    })
+    // schemaPath and migrationsDirectoryPath is optional for primitives
+    // like migrate diff and db execute
+    if (schemaPath) {
+      this.schemaPath = path.resolve(process.cwd(), schemaPath)
+      this.migrationsDirectoryPath = path.join(path.dirname(this.schemaPath), 'migrations')
+      this.engine = new SchemaEngine({
+        schemaPath: this.schemaPath,
+        enabledPreviewFeatures,
+      })
+    } else {
+      this.engine = new SchemaEngine({
+        enabledPreviewFeatures,
+      })
+    }
   }
 
   public stop(): void {
     this.engine.stop()
   }
 
-  public getSchemaPath(schemaPathFromOptions?): string {
-    const schemaPath = getSchemaPathSync(schemaPathFromOptions)
+  public getPrismaSchema(): Promise<GetSchemaResult> {
+    if (!this.schemaPath) throw new Error('this.schemaPath is undefined')
 
-    if (!schemaPath) {
-      throw new NoSchemaFoundError()
-    }
-
-    return schemaPath
-  }
-
-  public getDatamodel(): string {
-    return fs.readFileSync(this.schemaPath, 'utf-8')
+    return getSchemaWithPath(this.schemaPath)
   }
 
   public reset(): Promise<void> {
@@ -60,6 +64,8 @@ export class Migrate {
   }: {
     optInToShadowDatabase: boolean
   }): Promise<EngineResults.DiagnoseMigrationHistoryOutput> {
+    if (!this.migrationsDirectoryPath) throw new Error('this.migrationsDirectoryPath is undefined')
+
     return this.engine.diagnoseMigrationHistory({
       migrationsDirectoryPath: this.migrationsDirectoryPath,
       optInToShadowDatabase,
@@ -67,18 +73,24 @@ export class Migrate {
   }
 
   public listMigrationDirectories(): Promise<EngineResults.ListMigrationDirectoriesOutput> {
+    if (!this.migrationsDirectoryPath) throw new Error('this.migrationsDirectoryPath is undefined')
+
     return this.engine.listMigrationDirectories({
       migrationsDirectoryPath: this.migrationsDirectoryPath,
     })
   }
 
   public devDiagnostic(): Promise<EngineResults.DevDiagnosticOutput> {
+    if (!this.migrationsDirectoryPath) throw new Error('this.migrationsDirectoryPath is undefined')
+
     return this.engine.devDiagnostic({
       migrationsDirectoryPath: this.migrationsDirectoryPath,
     })
   }
 
   public async markMigrationApplied({ migrationId }: { migrationId: string }): Promise<void> {
+    if (!this.migrationsDirectoryPath) throw new Error('this.migrationsDirectoryPath is undefined')
+
     return await this.engine.markMigrationApplied({
       migrationsDirectoryPath: this.migrationsDirectoryPath,
       migrationName: migrationId,
@@ -92,26 +104,30 @@ export class Migrate {
   }
 
   public applyMigrations(): Promise<EngineResults.ApplyMigrationsOutput> {
+    if (!this.migrationsDirectoryPath) throw new Error('this.migrationsDirectoryPath is undefined')
+
     return this.engine.applyMigrations({
       migrationsDirectoryPath: this.migrationsDirectoryPath,
     })
   }
 
-  public evaluateDataLoss(): Promise<EngineResults.EvaluateDataLossOutput> {
-    const datamodel = this.getDatamodel()
+  public async evaluateDataLoss(): Promise<EngineResults.EvaluateDataLossOutput> {
+    if (!this.migrationsDirectoryPath) throw new Error('this.migrationsDirectoryPath is undefined')
+
+    const schema = toSchemasContainer((await this.getPrismaSchema()).schemas)
 
     return this.engine.evaluateDataLoss({
       migrationsDirectoryPath: this.migrationsDirectoryPath,
-      prismaSchema: datamodel,
+      schema: schema,
     })
   }
 
   public async push({ force = false }: { force?: boolean }): Promise<EngineResults.SchemaPush> {
-    const datamodel = this.getDatamodel()
+    const schema = toSchemasContainer((await this.getPrismaSchema()).schemas)
 
     const { warnings, unexecutable, executedSteps } = await this.engine.schemaPush({
       force,
-      schema: datamodel,
+      schema,
     })
 
     return {
@@ -121,26 +137,32 @@ export class Migrate {
     }
   }
 
-  public async tryToRunGenerate(): Promise<void> {
+  public async tryToRunGenerate(datasourceInfo: DatasourceInfo): Promise<void> {
+    if (!this.schemaPath) throw new Error('this.schemaPath is undefined')
+
+    // Auto-append the `--no-engine` flag to the `prisma generate` command when a Prisma Postgres URL is used.
+    const skipEngines = isPrismaPostgres(datasourceInfo.url)
+
     const message: string[] = []
 
-    console.info() // empty line
-    logUpdate(`Running generate... ${chalk.dim('(Use --skip-generate to skip the generators)')}`)
+    process.stdout.write('\n') // empty line
+    logUpdate(`Running generate... ${dim('(Use --skip-generate to skip the generators)')}`)
 
     const generators = await getGenerators({
       schemaPath: this.schemaPath,
       printDownloadProgress: true,
       version: enginesVersion,
       cliVersion: packageJson.version,
+      noEngine: skipEngines,
     })
 
     for (const generator of generators) {
       logUpdate(`Running generate... - ${generator.getPrettyName()}`)
 
-      const before = Date.now()
+      const before = Math.round(performance.now())
       try {
         await generator.generate()
-        const after = Date.now()
+        const after = Math.round(performance.now())
         message.push(getGeneratorSuccessMessage(generator, after - before))
         generator.stop()
       } catch (e: any) {

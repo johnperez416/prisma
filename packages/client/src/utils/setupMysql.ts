@@ -1,7 +1,7 @@
+import { createDatabase, uriToCredentials } from '@prisma/internals'
 import fs from 'fs'
-import path from 'path'
-import { createDatabase, uriToCredentials } from '@prisma/sdk'
 import mariadb from 'mariadb'
+import path from 'path'
 
 export type SetupParams = {
   connectionString: string
@@ -23,6 +23,7 @@ export async function setupMysql(options: SetupParams): Promise<void> {
     user: credentials.user,
     password: credentials.password,
     multipleStatements: true,
+    allowPublicKeyRetrieval: true,
   })
 
   await db.query(schema)
@@ -42,6 +43,7 @@ export async function tearDownMysql(connectionString: string) {
     user: credentialsClone.user,
     password: credentialsClone.password,
     multipleStatements: true,
+    allowPublicKeyRetrieval: true,
   })
 
   await db.query(`

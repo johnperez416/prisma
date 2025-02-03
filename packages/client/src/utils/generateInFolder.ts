@@ -1,33 +1,38 @@
 import Debug from '@prisma/debug'
 import { getEnginesPath } from '@prisma/engines'
-import { getNodeAPIName, getPlatform } from '@prisma/get-platform'
-import { extractPreviewFeatures, getConfig, getDMMF, getPackedPackage, mapPreviewFeatures } from '@prisma/sdk'
-import { ClientEngineType, getClientEngineType } from '@prisma/sdk'
+import { getBinaryTargetForCurrentPlatform, getNodeAPIName } from '@prisma/get-platform'
+import { type GetSchemaResult, getSchemaWithPath, mergeSchemas } from '@prisma/internals'
+import {
+  ClientEngineType,
+  extractPreviewFeatures,
+  getClientEngineType,
+  getConfig,
+  getDMMF,
+  getPackedPackage,
+} from '@prisma/internals'
 import copy from '@timsuchanek/copy'
 import fs from 'fs'
 import path from 'path'
 import { performance } from 'perf_hooks'
 import rimraf from 'rimraf'
 import { promisify } from 'util'
+
 import { generateClient } from '../generation/generateClient'
 import { ensureTestClientQueryEngine } from './ensureTestClientQueryEngine'
+
 const debug = Debug('prisma:generateInFolder')
 const del = promisify(rimraf)
 
 export interface GenerateInFolderOptions {
   projectDir: string
-  useLocalRuntime?: boolean
-  transpile?: boolean
   packageSource?: string
-  useBuiltRuntime?: boolean
+  overrideEngineType?: ClientEngineType
 }
 
 export async function generateInFolder({
   projectDir,
-  useLocalRuntime = false,
-  transpile = true,
   packageSource,
-  useBuiltRuntime,
+  overrideEngineType,
 }: GenerateInFolderOptions): Promise<number> {
   const before = performance.now()
   if (!projectDir) {
@@ -37,110 +42,94 @@ export async function generateInFolder({
     throw new Error(`Path ${projectDir} does not exist`)
   }
 
-  const schemaPath = getSchemaPath(projectDir)
-  const datamodel = fs.readFileSync(schemaPath, 'utf-8')
+  let schemaPathResult: GetSchemaResult | null = null
+  const schemaNotFoundError = new Error(`Could not find any schema.prisma in ${projectDir} or sub directories.`)
 
-  const config = await getConfig({ datamodel, ignoreEnvVarErrors: true })
-  const previewFeatures = mapPreviewFeatures(extractPreviewFeatures(config))
-  const clientGenerator = config.generators[0]
-  const clientEngineType = getClientEngineType(clientGenerator)
+  try {
+    schemaPathResult = await getSchemaWithPath(undefined, { cwd: projectDir })
+  } catch (e) {
+    debug('Error in getSchemaPath', e)
+  }
 
-  const dmmf = await getDMMF({
-    datamodel,
-    previewFeatures,
-  })
+  if (!schemaPathResult) {
+    throw schemaNotFoundError
+  }
 
-  const outputDir = transpile
-    ? path.join(projectDir, 'node_modules/@prisma/client')
-    : path.join(projectDir, '@prisma/client')
+  const { schemas, schemaPath } = schemaPathResult
 
-  // if (transpile && config.generators[0]?.output) {
-  //   outputDir = path.join(path.dirname(schemaPath), config.generators[0]?.output)
-  // }
+  if (overrideEngineType) {
+    process.env.PRISMA_CLIENT_ENGINE_TYPE = overrideEngineType
+  }
+
+  const config = await getConfig({ datamodel: schemas, ignoreEnvVarErrors: true })
+  const previewFeatures = extractPreviewFeatures(config)
+  const clientEngineType = getClientEngineType(config.generators[0])
+
+  const outputDir = path.join(projectDir, 'node_modules/@prisma/client')
 
   await del(outputDir)
 
-  if (transpile) {
-    if (packageSource) {
-      await copy({
-        from: packageSource, // when using yarn pack and extracting it, it includes a folder called "package"
-        to: outputDir,
-        recursive: true,
-        parallelJobs: 20,
-        overwrite: true,
-      })
-    } else {
-      await getPackedPackage('@prisma/client', outputDir)
-    }
+  if (packageSource) {
+    await copy({
+      from: packageSource, // when using yarn pack and extracting it, it includes a folder called "package"
+      to: outputDir,
+      recursive: true,
+      parallelJobs: 20,
+      overwrite: true,
+    })
+  } else {
+    await getPackedPackage('@prisma/client', outputDir)
   }
 
-  const platform = await getPlatform()
+  const binaryTarget = await getBinaryTargetForCurrentPlatform()
 
-  let runtimeDir
-  if (useLocalRuntime) {
-    if (useBuiltRuntime) {
-      runtimeDir = path.relative(outputDir, path.join(__dirname, '../../runtime'))
-    } else {
-      runtimeDir = path.relative(outputDir, path.join(__dirname, '../runtime'))
-    }
-  } else if (useBuiltRuntime) {
-    throw new Error(`Please provide useBuiltRuntime and useLocalRuntime at the same time or just useLocalRuntime`)
-  }
   const enginesPath = getEnginesPath()
-  const queryEngineLibraryPath = path.join(enginesPath, getNodeAPIName(platform, 'fs'))
-  const queryEngineBinaryPath = path.join(
-    enginesPath,
-    `query-engine-${platform}${platform === 'windows' ? '.exe' : ''}`,
-  )
+  const queryEngineLibraryPath =
+    process.env.PRISMA_QUERY_ENGINE_LIBRARY ?? path.join(enginesPath, getNodeAPIName(binaryTarget, 'fs'))
+  const queryEngineBinaryPath =
+    process.env.PRISMA_QUERY_ENGINE_BINARY ??
+    path.join(enginesPath, `query-engine-${binaryTarget}${binaryTarget === 'windows' ? '.exe' : ''}`)
 
-  await ensureTestClientQueryEngine(clientEngineType, platform)
+  await ensureTestClientQueryEngine(clientEngineType, binaryTarget)
 
   const binaryPaths =
     clientEngineType === ClientEngineType.Library
       ? {
           libqueryEngine: {
-            [platform]: queryEngineLibraryPath,
+            [binaryTarget]: queryEngineLibraryPath,
           },
         }
       : {
           queryEngine: {
-            [platform]: queryEngineBinaryPath,
+            [binaryTarget]: queryEngineBinaryPath,
           },
         }
 
-  // we make sure that we are in the project root
-  // this only applies to generated test clients
-  process.chdir(projectDir)
+  // TODO: use engine.getDmmf()
+  const dmmf = await getDMMF({
+    datamodel: schemas,
+    previewFeatures,
+  })
+
+  const schema = mergeSchemas({ schemas })
 
   await generateClient({
     binaryPaths,
-    datamodel,
+    datamodel: schema,
     dmmf,
     ...config,
     outputDir,
-    schemaDir: path.dirname(schemaPath),
-    runtimeDir,
-    transpile,
+    schemaPath,
     testMode: true,
-    datamodelPath: schemaPath,
     copyRuntime: false,
     generator: config.generators[0],
     clientVersion: 'local',
     engineVersion: 'local',
     activeProvider: config.datasources[0].activeProvider,
   })
+
   const time = performance.now() - before
   debug(`Done generating client in ${time}`)
 
   return time
-}
-
-function getSchemaPath(projectDir: string): string {
-  if (fs.existsSync(path.join(projectDir, 'schema.prisma'))) {
-    return path.join(projectDir, 'schema.prisma')
-  }
-  if (fs.existsSync(path.join(projectDir, 'prisma/schema.prisma'))) {
-    return path.join(projectDir, 'prisma/schema.prisma')
-  }
-  throw new Error(`Could not find any schema.prisma in ${projectDir} or sub directories.`)
 }

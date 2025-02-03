@@ -1,26 +1,44 @@
-import type { Command } from '@prisma/sdk'
+import Debug from '@prisma/debug'
 import {
+  arg,
+  checkUnsupportedDataProxy,
+  Command,
   format,
   formatms,
-  HelpError,
-  getSchemaPath,
-  arg,
-  link,
-  drawBox,
-  getSchema,
-  getConfig,
   getCommandWithExecutor,
-} from '@prisma/sdk'
-import chalk from 'chalk'
+  getConfig,
+  getSchema,
+  getSchemaWithPathOptional,
+  HelpError,
+  link,
+  loadEnvFile,
+  locateLocalCloudflareD1,
+  type MultipleSchemas,
+  protocolToConnectorType,
+  relativizePathInPSLError,
+  toSchemasContainer,
+} from '@prisma/internals'
+import { MigrateTypes } from '@prisma/internals'
+import { bold, dim, green, red, underline, yellow } from 'kleur/colors'
 import path from 'path'
-import type { IntrospectionWarnings, IntrospectionSchemaVersion } from '@prisma/sdk'
-import { IntrospectionEngine } from '@prisma/sdk'
-import fs from 'fs'
-import { protocolToConnectorType } from '@prisma/sdk/dist/convertCredentials'
-import { printDatasources } from '../utils/printDatasources'
-import { removeDatasource } from '../utils/removeDatasource'
+import { match } from 'ts-pattern'
+
+import { SchemaEngine } from '../SchemaEngine'
+import type { EngineArgs } from '../types'
+import { countModelsAndTypes } from '../utils/countModelsAndTypes'
+import { getDatasourceInfo } from '../utils/ensureDatabaseExists'
 import { NoSchemaFoundError } from '../utils/errors'
+import { isSchemaEmpty } from '../utils/isSchemaEmpty'
 import { printDatasource } from '../utils/printDatasource'
+import type { ConnectorType } from '../utils/printDatasources'
+import { printDatasources } from '../utils/printDatasources'
+import { printIntrospectedSchema } from '../utils/printIntrospectedSchema'
+import { removeSchemaFiles } from '../utils/removeSchemaFiles'
+import { replaceOrAddDatasource } from '../utils/replaceOrAddDatasource'
+import { saveSchemaFiles } from '../utils/saveSchemaFiles'
+import { createSpinner } from '../utils/spinner'
+
+const debug = Debug('prisma:db:pull')
 
 export class DbPull implements Command {
   public static new(): DbPull {
@@ -30,33 +48,44 @@ export class DbPull implements Command {
   private static help = format(`
 Pull the state from the database to the Prisma schema using introspection
 
-${chalk.bold('Usage')}
+${bold('Usage')}
 
-  ${chalk.dim('$')} prisma db pull [options]
+  ${dim('$')} prisma db pull [flags/options]
 
-${chalk.bold('Options')}
+${bold('Flags')}
 
-  -h, --help   Display this help message
-    --schema   Custom path to your Prisma schema
-     --force   Ignore current Prisma schema file
-     --print   Print the introspected Prisma schema to stdout
+              -h, --help   Display this help message
+                 --force   Ignore current Prisma schema file
+                 --print   Print the introspected Prisma schema to stdout
 
-${chalk.bold('Examples')}
+${bold('Options')}
+
+                --schema   Custom path to your Prisma schema
+  --composite-type-depth   Specify the depth for introspecting composite types (e.g. Embedded Documents in MongoDB)
+                           Number, default is -1 for infinite depth, 0 = off
+               --schemas   Specify the database schemas to introspect. This overrides the schemas defined in the datasource block of your Prisma schema.
+              --local-d1   Generate a Prisma schema from a local Cloudflare D1 database
+${bold('Examples')}
 
 With an existing Prisma schema
-  ${chalk.dim('$')} prisma db pull
+  ${dim('$')} prisma db pull
 
 Or specify a Prisma schema path
-  ${chalk.dim('$')} prisma db pull --schema=./schema.prisma
+  ${dim('$')} prisma db pull --schema=./schema.prisma
 
 Instead of saving the result to the filesystem, you can also print it to stdout
-  ${chalk.dim('$')} prisma db pull --print
+  ${dim('$')} prisma db pull --print
+
+Overwrite the current schema with the introspected schema instead of enriching it
+  ${dim('$')} prisma db pull --force
+
+Set composite types introspection depth to 2 levels
+  ${dim('$')} prisma db pull --composite-type-depth=2
 
 `)
 
-  private urlToDatasource(url: string): string {
-    const provider = protocolToConnectorType(`${url.split(':')[0]}:`)
-
+  private urlToDatasource(url: string, defaultProvider?: ConnectorType): string {
+    const provider = defaultProvider || protocolToConnectorType(`${url.split(':')[0]}:`)
     return printDatasources([
       {
         config: {},
@@ -74,272 +103,350 @@ Instead of saving the result to the filesystem, you can also print it to stdout
       '--url': String,
       '--print': Boolean,
       '--schema': String,
+      '--schemas': String,
       '--force': Boolean,
       '--composite-type-depth': Number, // optional, only on mongodb
-      // deprecated
-      '--experimental-reintrospection': Boolean,
-      '--clean': Boolean,
+      '--local-d1': Boolean, // optional, only on cloudflare D1
     })
 
-    const log = (...messages): void => {
-      if (!args['--print']) {
-        console.info(...messages)
-      }
-    }
+    const spinnerFactory = createSpinner(!args['--print'])
 
     if (args instanceof Error) {
       return this.help(args.message)
     }
 
+    await checkUnsupportedDataProxy('db pull', args, !args['--url'])
+
     if (args['--help']) {
       return this.help()
     }
 
-    if (args['--clean'] || args['--experimental-reintrospection']) {
-      const renamedMessages: string[] = []
-      if (args['--experimental-reintrospection']) {
-        renamedMessages.push(
-          `The ${chalk.redBright(
-            '--experimental-reintrospection',
-          )} flag has been removed and is now the default behavior of ${chalk.greenBright('prisma db pull')}.`,
-        )
-      }
-
-      if (args['--clean']) {
-        renamedMessages.push(
-          `The ${chalk.redBright('--clean')} flag has been renamed to ${chalk.greenBright('--force')}.`,
-        )
-      }
-
-      console.error(`\n${renamedMessages.join('\n')}\n`)
-      process.exit(1)
-    }
-
     const url: string | undefined = args['--url']
-    let schemaPath = await getSchemaPath(args['--schema'])
+    const schemaPathResult = await getSchemaWithPathOptional(args['--schema'])
+    let schemaPath = schemaPathResult?.schemaPath ?? null
+    const rootDir = schemaPathResult?.schemaRootDir ?? process.cwd()
+    debug('schemaPathResult', schemaPathResult)
 
-    // Do not print if --print is passed to only have the schema in stdout
+    // Print to console if --print is not passed to only have the schema in stdout
     if (schemaPath && !args['--print']) {
-      console.info(chalk.dim(`Prisma schema loaded from ${path.relative(process.cwd(), schemaPath)}`))
+      process.stdout.write(dim(`Prisma schema loaded from ${path.relative(process.cwd(), schemaPath)}`) + '\n')
 
-      await printDatasource(schemaPath)
+      // Load and print where the .env was loaded (if loaded)
+      await loadEnvFile({ schemaPath: args['--schema'], printMessage: true })
+
+      printDatasource({ datasourceInfo: await getDatasourceInfo({ schemaPath }) })
+    } else {
+      // Load .env but don't print
+      await loadEnvFile({ schemaPath: args['--schema'], printMessage: false })
     }
 
-    if (!url && !schemaPath) {
+    const fromD1 = Boolean(args['--local-d1'])
+
+    if (!url && !schemaPath && !fromD1) {
       throw new NoSchemaFoundError()
     }
 
-    let schema: string | null = null
+    /**
+     * When `schemaPath` is set:
+     * - read the schema file from disk
+     * - in case `url` is also set, embed the URL to the schema's datasource without overriding the provider.
+     *   This is especially useful to distinguish CockroachDB from Postgres datasources.
+     *
+     * When `url` is set, and `schemaPath` isn't:
+     * - create a minimal schema with a datasource block from the given URL.
+     *   CockroachDB URLs are however mapped to the `postgresql` provider, as those URLs are indistinguishable from Postgres URLs.
+     * Note: this schema is persisted to `./schema.prisma`, rather than the canonical `./prisma/schema.prisma`.
+     *
+     * If neither these variables were set, we'd have already thrown a `NoSchemaFoundError`.
+     */
+    const { firstDatasource, schema, validationWarning } = await match({ url, schemaPath, fromD1 })
+      .when(
+        (input): input is { url: string | undefined; schemaPath: string; fromD1: boolean } => input.schemaPath !== null,
+        async (input) => {
+          const rawSchema = await getSchema(input.schemaPath)
+          const config = await getConfig({
+            datamodel: rawSchema,
+            ignoreEnvVarErrors: true,
+          })
 
-    // Makes sure we have a schema to pass to the engine
-    if (url && schemaPath) {
-      schema = this.urlToDatasource(url)
-      const rawSchema = fs.readFileSync(schemaPath, 'utf-8')
-      schema += removeDatasource(rawSchema)
-    } else if (url) {
-      schema = this.urlToDatasource(url)
-    } else if (schemaPath) {
-      schema = fs.readFileSync(schemaPath, 'utf-8')
-    } else {
-      throw new Error('Could not find a `schema.prisma` file')
+          const previewFeatures = config.generators.find(({ name }) => name === 'client')?.previewFeatures
+          const firstDatasource = config.datasources[0] ? config.datasources[0] : undefined
+
+          if (input.url) {
+            let providerFromSchema = firstDatasource?.provider
+            // Both postgres and postgresql are valid provider
+            // We need to remove the alias for the error logic below
+            if (providerFromSchema === 'postgres') {
+              providerFromSchema = 'postgresql'
+            }
+
+            // protocolToConnectorType ensures that the protocol from `input.url` is valid or throws
+            // TODO: better error handling with better error message
+            // Related https://github.com/prisma/prisma/issues/14732
+            const providerFromUrl = protocolToConnectorType(`${input.url.split(':')[0]}:`)
+            const schema = replaceOrAddDatasource(this.urlToDatasource(input.url, providerFromSchema), rawSchema)
+
+            // if providers are different the engine would return a misleading error
+            // So we check here and return a better error
+            // if a combination of non compatible providers is used
+            // since cockroachdb is compatible with postgresql
+            // we only error if it's a different combination
+            if (
+              providerFromSchema &&
+              providerFromUrl &&
+              providerFromSchema !== providerFromUrl &&
+              Boolean(providerFromSchema === 'cockroachdb' && providerFromUrl === 'postgresql') === false
+            ) {
+              throw new Error(
+                `The database provider found in --url (${providerFromUrl}) is different from the provider found in the Prisma schema (${providerFromSchema}).`,
+              )
+            }
+
+            return { firstDatasource, schema, validationWarning: undefined }
+          } else if (input.fromD1) {
+            const d1Database = await locateLocalCloudflareD1({ arg: '--from-local-d1' })
+            const pathToSQLiteFile = path.relative(path.dirname(input.schemaPath), d1Database)
+
+            const schema: MultipleSchemas = [
+              ['schema.prisma', this.urlToDatasource(`file:${pathToSQLiteFile}`, 'sqlite')],
+            ]
+            const config = await getConfig({
+              datamodel: schema,
+              ignoreEnvVarErrors: true,
+            })
+
+            const result = { firstDatasource: config.datasources[0], schema, validationWarning: undefined }
+
+            const hasDriverAdaptersPreviewFeature = (previewFeatures || []).includes('driverAdapters')
+            const validationWarning = `Without the ${bold(
+              'driverAdapters',
+            )} preview feature, the schema introspected via the ${bold('--local-d1')} flag will not work with ${bold(
+              '@prisma/client',
+            )}.`
+
+            if (hasDriverAdaptersPreviewFeature) {
+              return result
+            } else {
+              return { ...result, validationWarning }
+            }
+          } else {
+            // Use getConfig with ignoreEnvVarErrors
+            // It will  throw an error if the env var is not set or if it is invalid
+            await getConfig({
+              datamodel: rawSchema,
+              ignoreEnvVarErrors: false,
+            })
+          }
+
+          return { firstDatasource, schema: rawSchema, validationWarning: undefined } as const
+        },
+      )
+      .when(
+        (input): input is { url: undefined; schemaPath: null; fromD1: true } => input.fromD1 === true,
+        async (_) => {
+          const d1Database = await locateLocalCloudflareD1({ arg: '--from-local-d1' })
+          const pathToSQLiteFile = path.relative(process.cwd(), d1Database)
+
+          // TODO: `urlToDatasource(..)` doesn't generate a `generator client` block. Should it?
+          // TODO: Should we also add the `Try Prisma Accelerate` comment like we do in `prisma init`?
+          const schemaContent = `generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+${this.urlToDatasource(`file:${pathToSQLiteFile}`, 'sqlite')}`
+          const schema: MultipleSchemas = [['schema.prisma', schemaContent]]
+          const config = await getConfig({
+            datamodel: schema,
+            ignoreEnvVarErrors: true,
+          })
+
+          return { firstDatasource: config.datasources[0], schema, validationWarning: undefined }
+        },
+      )
+      .when(
+        (input): input is { url: string; schemaPath: null; fromD1: false } => input.url !== undefined,
+        async (input) => {
+          // protocolToConnectorType ensures that the protocol from `input.url` is valid or throws
+          // TODO: better error handling with better error message
+          // Related https://github.com/prisma/prisma/issues/14732
+          protocolToConnectorType(`${input.url.split(':')[0]}:`)
+          const schema: MultipleSchemas = [['schema.prisma', this.urlToDatasource(input.url)]]
+          const config = await getConfig({
+            datamodel: schema,
+            ignoreEnvVarErrors: true,
+          })
+          return { firstDatasource: config.datasources[0], schema, validationWarning: undefined }
+        },
+      )
+      .run()
+
+    if (schemaPath) {
+      const schemas = await getSchema(args['--schema'])
+
+      // Re-Introspection is not supported on MongoDB
+      const modelRegex = /\s*model\s*(\w+)\s*{/
+      const isReintrospection = schemas.some(([_, schema]) => !!modelRegex.exec(schema as string))
+
+      if (isReintrospection && !args['--force'] && firstDatasource?.provider === 'mongodb') {
+        throw new Error(`Iterating on one schema using re-introspection with db pull is currently not supported with MongoDB provider.
+You can explicitly ignore and override your current local schema file with ${green(
+          getCommandWithExecutor('prisma db pull --force'),
+        )}
+Some information will be lost (relations, comments, mapped fields, @ignore...), follow ${link(
+          'https://github.com/prisma/prisma/issues/9585',
+        )} for more info.`)
+      }
     }
 
-    const engine = new IntrospectionEngine({
-      cwd: schemaPath ? path.dirname(schemaPath) : undefined,
+    const engine = new SchemaEngine({
+      schemaPath: schemaPath ?? undefined,
     })
 
     const basedOn =
       !args['--url'] && schemaPath
-        ? ` based on datasource defined in ${chalk.underline(path.relative(process.cwd(), schemaPath))}`
+        ? ` based on datasource defined in ${underline(path.relative(process.cwd(), schemaPath))}`
         : ''
-    log(`\nIntrospecting${basedOn} …`)
+    const introspectionSpinner = spinnerFactory(`Introspecting${basedOn}`)
 
-    const before = Date.now()
-    let introspectionSchema = ''
-    let introspectionWarnings: IntrospectionWarnings[]
-    let introspectionSchemaVersion: IntrospectionSchemaVersion
+    const before = Math.round(performance.now())
+    let introspectionSchema: MigrateTypes.SchemasContainer | undefined = undefined
+    let introspectionWarnings: EngineArgs.IntrospectResult['warnings']
     try {
-      const introspectionResult = await engine.introspect(schema, args['--force'], args['--composite-type-depth'])
+      const introspectionResult = await engine.introspect({
+        schema: toSchemasContainer(schema),
+        baseDirectoryPath: rootDir,
+        force: args['--force'],
+        compositeTypeDepth: args['--composite-type-depth'],
+        namespaces: args['--schemas']?.split(','),
+      })
 
-      introspectionSchema = introspectionResult.datamodel
+      introspectionSchema = introspectionResult.schema
       introspectionWarnings = introspectionResult.warnings
-      introspectionSchemaVersion = introspectionResult.version
+      debug(`Introspection warnings`, introspectionWarnings)
     } catch (e: any) {
-      if (e.code === 'P4001') {
-        if (introspectionSchema.trim() === '') {
-          throw new Error(`\n${chalk.red.bold('P4001 ')}${chalk.red('The introspected database was empty:')} ${
-            url ? chalk.underline(url) : ''
-          }
+      introspectionSpinner.failure()
 
-${chalk.bold('prisma db pull')} could not create any models in your ${chalk.bold(
-            'schema.prisma',
-          )} file and you will not be able to generate Prisma Client with the ${chalk.bold(
-            getCommandWithExecutor('prisma generate'),
-          )} command.
+      /**
+       * Human-friendly error handling based on:
+       * https://www.prisma.io/docs/reference/api-reference/error-reference
+       */
 
-${chalk.bold('To fix this, you have two options:')}
+      if (e.code === 'P4001' && isSchemaEmpty(introspectionSchema)) {
+        /* P4001: The introspected database was empty */
+        throw new Error(`\n${red(bold(`${e.code} `))}${red('The introspected database was empty:')}
+
+${bold('prisma db pull')} could not create any models in your ${bold(
+          'schema.prisma',
+        )} file and you will not be able to generate Prisma Client with the ${bold(
+          getCommandWithExecutor('prisma generate'),
+        )} command.
+
+${bold('To fix this, you have two options:')}
 
 - manually create a table in your database.
-- make sure the database connection URL inside the ${chalk.bold('datasource')} block in ${chalk.bold(
-            'schema.prisma',
-          )} points to a database that is not empty (it must contain at least one table).
+- make sure the database connection URL inside the ${bold('datasource')} block in ${bold(
+          'schema.prisma',
+        )} points to a database that is not empty (it must contain at least one table).
 
-Then you can run ${chalk.green(getCommandWithExecutor('prisma db pull'))} again. 
+Then you can run ${green(getCommandWithExecutor('prisma db pull'))} again. 
 `)
-        }
-      } else if (e.code === 'P1012') {
-        // Schema Parsing Error
-        console.info() // empty line
-        throw new Error(`${chalk.red(`${e.code}`)} Introspection failed as your current Prisma schema file is invalid
+      } else if (e.code === 'P1003') {
+        /* P1003: Database does not exist */
+        throw new Error(`\n${red(bold(`${e.code} `))}${red('The introspected database does not exist:')}
 
-Please fix your current schema manually, use ${chalk.green(
+${bold('prisma db pull')} could not create any models in your ${bold(
+          'schema.prisma',
+        )} file and you will not be able to generate Prisma Client with the ${bold(
+          getCommandWithExecutor('prisma generate'),
+        )} command.
+
+${bold('To fix this, you have two options:')}
+
+- manually create a database.
+- make sure the database connection URL inside the ${bold('datasource')} block in ${bold(
+          'schema.prisma',
+        )} points to an existing database.
+
+Then you can run ${green(getCommandWithExecutor('prisma db pull'))} again. 
+`)
+      } else if (e.code === 'P1012') {
+        /* P1012: Schema parsing error */
+        process.stdout.write('\n') // empty line
+
+        const message = relativizePathInPSLError(e.message)
+
+        // TODO: this error is misleading, as it gets thrown even when the schema is valid but the protocol of the given
+        // '--url' argument is different than the one written in the schema.prisma file.
+        // We should throw another error earlier in case the URL protocol is not compatible with the schema provider.
+        throw new Error(`${red(message)}
+Introspection failed as your current Prisma schema file is invalid
+
+Please fix your current schema manually (using either ${green(
           getCommandWithExecutor('prisma validate'),
-        )} to confirm it is valid and then run this command again.
-Or run this command with the ${chalk.green(
+        )} or the Prisma VS Code extension to understand what's broken and confirm you fixed it), and then run this command again.
+Or run this command with the ${green(
           '--force',
         )} flag to ignore your current schema and overwrite it. All local modifications will be lost.\n`)
       }
 
-      console.info() // empty line
+      process.stdout.write('\n') // empty line
       throw e
     }
 
-    function getWarningMessage(warnings: IntrospectionWarnings[]): string | undefined {
-      if (warnings.length > 0) {
-        let message = `\n*** WARNING ***\n`
-
-        for (const warning of warnings) {
-          message += `\n${warning.message}\n`
-
-          if (warning.code === 0) {
-            // affected === null
-          } else if (warning.code === 1) {
-            message += warning.affected.map((it) => `- "${it.model}"`).join('\n')
-          } else if (warning.code === 2) {
-            const modelsGrouped: {
-              [key: string]: string[]
-            } = warning.affected.reduce((acc, it) => {
-              if (!acc[it.model]) {
-                acc[it.model] = []
-              }
-              acc[it.model].push(it.field)
-              return acc
-            }, {})
-            message += Object.entries(modelsGrouped)
-              .map(([model, fields]) => `- Model: "${model}"\n  Field(s): "${fields.join('", "')}"`)
-              .join('\n')
-          } else if (warning.code === 3) {
-            message += warning.affected
-              .map((it) => `- Model "${it.model}", field: "${it.field}", original data type: "${it.tpe}"`)
-              .join('\n')
-          } else if (warning.code === 4) {
-            message += warning.affected.map((it) => `- Enum "${it.enm}", value: "${it.value}"`).join('\n')
-          } else if ([5, 6, 8, 11, 12, 13].includes(warning.code)) {
-            message += warning.affected.map((it) => `- Model "${it.model}", field: "${it.field}"`).join('\n')
-          } else if (warning.code === 7) {
-            message += warning.affected.map((it) => `- Model "${it.model}"`).join('\n')
-          } else if ([9, 10].includes(warning.code)) {
-            message += warning.affected.map((it) => `- Enum "${it.enm}"`).join('\n')
-          } else if (warning.code === 101) {
-            message += warning.affected.name
-              .map((it) => `- Model "${it.model}", field: "${it.field}", chosen data type: "${it.tpe}"`)
-              .join('\n')
-          } else if (warning.affected) {
-            // Output unhandled warning
-            message += `Code ${warning.code}\n${JSON.stringify(warning.affected, null, 2)}`
-          }
-
-          message += `\n`
-        }
-        return message
-      }
-
-      return undefined
-    }
-
-    const introspectionWarningsMessage = getWarningMessage(introspectionWarnings) || ''
-
-    const prisma1UpgradeMessage = introspectionSchemaVersion.includes('Prisma1')
-      ? `\n${chalk.bold('Upgrading from Prisma 1 to Prisma 2?')}
-      \nThe database you introspected could belong to a Prisma 1 project.
-
-Please run the following command to upgrade to Prisma 2.0:
-${chalk.green('npx prisma-upgrade [path-to-prisma-yml] [path-to-schema-prisma]')}
-
-Note: \`prisma.yml\` and \`schema.prisma\` paths are optional.
- 
-Learn more about the upgrade process in the docs:\n${link('https://pris.ly/d/upgrading-to-prisma2')}
-`
-      : ''
+    const introspectionWarningsMessage = this.getWarningMessage(introspectionWarnings)
 
     if (args['--print']) {
-      console.log(introspectionSchema)
-      introspectionSchemaVersion &&
-        console.log(
-          `\n// introspectionSchemaVersion: ${introspectionSchemaVersion}`,
-          prisma1UpgradeMessage.replace(/(\n)/gm, '\n// '),
-        )
+      printIntrospectedSchema(introspectionSchema, process.stdout)
+
       if (introspectionWarningsMessage.trim().length > 0) {
         // Replace make it a // comment block
         console.error(introspectionWarningsMessage.replace(/(\n)/gm, '\n// '))
       }
     } else {
-      if (schemaPath) {
-        const schema = await getSchema(args['--schema'])
-        const config = await getConfig({
-          datamodel: schema,
-          ignoreEnvVarErrors: true,
-        })
-
-        const modelRegex = /\s*model\s*(\w+)\s*{/
-        const modelMatch = modelRegex.exec(schema)
-        const isReintrospection = modelMatch
-
-        if (isReintrospection && !args['--force'] && config.datasources[0].provider === 'mongodb') {
-          engine.stop()
-          throw new Error(`Iterating on one schema using re-introspection with db pull is currently not supported with MongoDB provider (Preview).
-You can explicitely ignore and override your current local schema file with ${chalk.green(
-            getCommandWithExecutor('prisma db pull --force'),
-          )}
-Some information will be lost (relations, comments, mapped fields, @ignore...), follow ${link(
-            'https://github.com/prisma/prisma/issues/9585',
-          )} for more info.`)
-        }
-      }
       schemaPath = schemaPath || 'schema.prisma'
-      fs.writeFileSync(schemaPath, introspectionSchema)
+      if (args['--force']) {
+        await removeSchemaFiles(schema)
+      }
+      await saveSchemaFiles(introspectionSchema)
 
-      const modelsCount = (introspectionSchema.match(/^model\s+/gm) || []).length
+      const { modelsCount, typesCount } = countModelsAndTypes(introspectionSchema)
 
-      const prisma1UpgradeMessageBox = prisma1UpgradeMessage
-        ? '\n\n' +
-          drawBox({
-            height: 16,
-            width: 74,
-            str:
-              prisma1UpgradeMessage +
-              '\nOnce you upgraded your database schema to Prisma 2.0, \ncontinue with the instructions below.\n',
-            horizontalPadding: 2,
-          })
-        : ''
+      const modelsCountMessage = `${modelsCount} ${modelsCount > 1 ? 'models' : 'model'}`
+      const typesCountMessage = `${typesCount} ${typesCount > 1 ? 'embedded documents' : 'embedded document'}`
+      let modelsAndTypesMessage: string
+      if (typesCount > 0) {
+        modelsAndTypesMessage = `${modelsCountMessage} and ${typesCountMessage}`
+      } else {
+        modelsAndTypesMessage = `${modelsCountMessage}`
+      }
+      const modelsAndTypesCountMessage =
+        modelsCount + typesCount > 1
+          ? `${modelsAndTypesMessage} and wrote them`
+          : `${modelsAndTypesMessage} and wrote it`
 
-      log(`\n✔ Introspected ${modelsCount} ${
-        modelsCount > 1 ? 'models and wrote them' : 'model and wrote it'
-      } into ${chalk.underline(path.relative(process.cwd(), schemaPath))} in ${chalk.bold(
-        formatms(Date.now() - before),
-      )}${prisma1UpgradeMessageBox}
-      ${chalk.keyword('orange')(introspectionWarningsMessage)}
-${`Run ${chalk.green(getCommandWithExecutor('prisma generate'))} to generate Prisma Client.`}`)
+      const renderValidationWarning = validationWarning ? `\n${yellow(validationWarning)}` : ''
+
+      introspectionSpinner.success(`Introspected ${modelsAndTypesCountMessage} into ${underline(
+        path.relative(process.cwd(), schemaPath),
+      )} in ${bold(formatms(Math.round(performance.now()) - before))}
+      ${yellow(introspectionWarningsMessage)}
+${`Run ${green(getCommandWithExecutor('prisma generate'))} to generate Prisma Client.`}${renderValidationWarning}`)
     }
 
-    engine.stop()
+    return ''
+  }
+
+  private getWarningMessage(warnings: EngineArgs.IntrospectResult['warnings']): string {
+    if (warnings) {
+      return `\n${warnings}`
+    }
 
     return ''
   }
 
   public help(error?: string): string | HelpError {
     if (error) {
-      return new HelpError(`\n${chalk.bold.red(`!`)} ${error}\n${DbPull.help}`)
+      return new HelpError(`\n${bold(red(`!`))} ${error}\n${DbPull.help}`)
     }
     return DbPull.help
   }

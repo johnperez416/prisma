@@ -1,19 +1,52 @@
+import indent from 'indent-string'
+
+import { TAB_SIZE } from './constants'
 import type { TSClientOptions } from './TSClient'
 
 export const commonCodeJS = ({
-  runtimeDir,
-  runtimeName,
+  runtimeBase,
+  runtimeNameJs,
   browser,
   clientVersion,
   engineVersion,
-}: TSClientOptions): string => `
+  generator,
+  deno,
+}: TSClientOptions): string => `${deno ? 'const exports = {}' : ''}
 Object.defineProperty(exports, "__esModule", { value: true });
 ${
-  browser
+  deno
+    ? `
+import {
+  PrismaClientKnownRequestError,
+  PrismaClientUnknownRequestError,
+  PrismaClientRustPanicError,
+  PrismaClientInitializationError,
+  PrismaClientValidationError,
+  getPrismaClient,
+  sqltag,
+  empty,
+  join,
+  raw,
+  Decimal,
+  Debug,
+  objectEnumValues,
+  makeStrictEnum,
+  Extensions,
+  defineDmmfProperty,
+  Public,
+  getRuntime,
+  skip
+} from '${runtimeBase}/${runtimeNameJs}.js'`
+    : browser
     ? `
 const {
-  Decimal
-} = require('${runtimeDir}/${runtimeName}')
+  Decimal,
+  objectEnumValues,
+  makeStrictEnum,
+  Public,
+  getRuntime,
+  skip
+} = require('${runtimeBase}/${runtimeNameJs}.js')
 `
     : `
 const {
@@ -22,20 +55,30 @@ const {
   PrismaClientRustPanicError,
   PrismaClientInitializationError,
   PrismaClientValidationError,
-  decompressFromBase64,
   getPrismaClient,
   sqltag,
   empty,
   join,
   raw,
-  Decimal
-} = require('${runtimeDir}/${runtimeName}')
+  skip,
+  Decimal,
+  Debug,
+  objectEnumValues,
+  makeStrictEnum,
+  Extensions,
+  warnOnce,
+  defineDmmfProperty,
+  Public,
+  getRuntime,
+  createParam,
+} = require('${runtimeBase}/${runtimeNameJs}.js')
 `
 }
 
 const Prisma = {}
 
 exports.Prisma = Prisma
+exports.$Enums = {}
 
 /**
  * Prisma Client JS version: ${clientVersion}
@@ -60,35 +103,65 @@ Prisma.sql = ${notSupportOnBrowser('sqltag', browser)}
 Prisma.empty = ${notSupportOnBrowser('empty', browser)}
 Prisma.join = ${notSupportOnBrowser('join', browser)}
 Prisma.raw = ${notSupportOnBrowser('raw', browser)}
-Prisma.validator = () => (val) => val
+Prisma.validator = Public.validator
+
+/**
+* Extensions
+*/
+Prisma.getExtensionContext = ${notSupportOnBrowser('Extensions.getExtensionContext', browser)}
+Prisma.defineExtension = ${notSupportOnBrowser('Extensions.defineExtension', browser)}
 
 /**
  * Shorthand utilities for JSON filtering
  */
-Prisma.DbNull = 'DbNull'
-Prisma.JsonNull = 'JsonNull'
-Prisma.AnyNull = 'AnyNull'
+Prisma.DbNull = objectEnumValues.instances.DbNull
+Prisma.JsonNull = objectEnumValues.instances.JsonNull
+Prisma.AnyNull = objectEnumValues.instances.AnyNull
+
+Prisma.NullTypes = {
+  DbNull: objectEnumValues.classes.DbNull,
+  JsonNull: objectEnumValues.classes.JsonNull,
+  AnyNull: objectEnumValues.classes.AnyNull
+}
+
+${buildPrismaSkipJs(generator.previewFeatures)}
 `
 
 export const notSupportOnBrowser = (fnc: string, browser?: boolean) => {
-  if (browser)
+  if (browser) {
     return `() => {
-  throw new Error(\`${fnc} is unable to be run in the browser.
-In case this error is unexpected for you, please report it in https://github.com/prisma/prisma/issues\`,
+  const runtimeName = getRuntime().prettyName;
+  throw new Error(\`${fnc} is unable to run in this browser environment, or has been bundled for the browser (running in \${runtimeName}).
+In case this error is unexpected for you, please report it in https://pris.ly/prisma-prisma-bug-report\`,
 )}`
+  }
   return fnc
 }
 
-export const commonCodeTS = ({ runtimeDir, runtimeName, clientVersion, engineVersion }: TSClientOptions) => ({
-  tsWithoutNamespace: () => `import * as runtime from '${runtimeDir}/${runtimeName}';
-declare const prisma: unique symbol
-export type PrismaPromise<A> = Promise<A> & {[prisma]: true}
-type UnwrapPromise<P extends any> = P extends Promise<infer R> ? R : P
-type UnwrapTuple<Tuple extends readonly unknown[]> = {
-  [K in keyof Tuple]: K extends \`\$\{number\}\` ? Tuple[K] extends PrismaPromise<infer X> ? X : UnwrapPromise<Tuple[K]> : UnwrapPromise<Tuple[K]>
-};
+export const commonCodeTS = ({
+  runtimeBase,
+  runtimeNameTs,
+  clientVersion,
+  engineVersion,
+  generator,
+}: TSClientOptions) => ({
+  tsWithoutNamespace: () => `import * as runtime from '${runtimeBase}/${runtimeNameTs}';
+import $Types = runtime.Types // general types
+import $Public = runtime.Types.Public
+import $Utils = runtime.Types.Utils
+import $Extensions = runtime.Types.Extensions
+import $Result = runtime.Types.Result
+
+export type PrismaPromise<T> = $Public.PrismaPromise<T>
 `,
-  ts: (hideFetcher?: boolean) => `export import DMMF = runtime.DMMF
+  ts: () => `export import DMMF = runtime.DMMF
+
+export type PrismaPromise<T> = $Public.PrismaPromise<T>
+
+/**
+ * Validator
+ */
+export import validator = runtime.Public.validator
 
 /**
  * Prisma Errors
@@ -108,10 +181,32 @@ export import join = runtime.join
 export import raw = runtime.raw
 export import Sql = runtime.Sql
 
+${buildPrismaSkipTs(generator.previewFeatures)}
+
 /**
  * Decimal.js
  */
 export import Decimal = runtime.Decimal
+
+export type DecimalJsLike = runtime.DecimalJsLike
+
+/**
+ * Metrics
+ */
+export type Metrics = runtime.Metrics
+export type Metric<T> = runtime.Metric<T>
+export type MetricHistogram = runtime.MetricHistogram
+export type MetricHistogramBucket = runtime.MetricHistogramBucket
+
+/**
+* Extensions
+*/
+export import Extension = $Extensions.UserArgs
+export import getExtensionContext = runtime.Extensions.getExtensionContext
+export import Args = $Public.Args
+export import Payload = $Public.Payload
+export import Result = $Public.Result
+export import Exact = $Public.Exact
 
 /**
  * Prisma Client JS version: ${clientVersion}
@@ -121,96 +216,63 @@ export type PrismaVersion = {
   client: string
 }
 
-export const prismaVersion: PrismaVersion 
+export const prismaVersion: PrismaVersion
 
 /**
  * Utility Types
  */
 
-/**
- * From https://github.com/sindresorhus/type-fest/
- * Matches a JSON object.
- * This type can be useful to enforce some input to be JSON-compatible or as a super-type to be extended from. 
- */
-export type JsonObject = {[Key in string]?: JsonValue}
+
+export import JsonObject = runtime.JsonObject
+export import JsonArray = runtime.JsonArray
+export import JsonValue = runtime.JsonValue
+export import InputJsonObject = runtime.InputJsonObject
+export import InputJsonArray = runtime.InputJsonArray
+export import InputJsonValue = runtime.InputJsonValue
 
 /**
- * From https://github.com/sindresorhus/type-fest/
- * Matches a JSON array.
- */
-export interface JsonArray extends Array<JsonValue> {}
-
-/**
- * From https://github.com/sindresorhus/type-fest/
- * Matches any valid JSON value.
- */
-export type JsonValue = string | number | boolean | JsonObject | JsonArray | null
-
-/**
- * Matches a JSON object.
- * Unlike \`JsonObject\`, this type allows undefined and read-only properties.
- */
-export type InputJsonObject = {readonly [Key in string]?: InputJsonValue | null}
-
-/**
- * Matches a JSON array.
- * Unlike \`JsonArray\`, readonly arrays are assignable to this type.
- */
-export interface InputJsonArray extends ReadonlyArray<InputJsonValue | null> {}
-
-/**
- * Matches any valid value that can be used as an input for operations like
- * create and update as the value of a JSON field. Unlike \`JsonValue\`, this
- * type allows read-only arrays and read-only object properties and disallows
- * \`null\` at the top level.
+ * Types of the values used to represent different kinds of \`null\` values when working with JSON fields.
  *
- * \`null\` cannot be used as the value of a JSON field because its meaning
- * would be ambiguous. Use \`Prisma.JsonNull\` to store the JSON null value or
- * \`Prisma.DbNull\` to clear the JSON value and set the field to the database
- * NULL value instead.
- *
- * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-by-null-values
+ * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
  */
-export type InputJsonValue = string | number | boolean | InputJsonObject | InputJsonArray
+namespace NullTypes {
+${buildNullClass('DbNull')}
+
+${buildNullClass('JsonNull')}
+
+${buildNullClass('AnyNull')}
+}
 
 /**
  * Helper for filtering JSON entries that have \`null\` on the database (empty on the db)
- * 
+ *
  * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
  */
-export const DbNull: 'DbNull'
+export const DbNull: NullTypes.DbNull
 
 /**
  * Helper for filtering JSON entries that have JSON \`null\` values (not empty on the db)
- * 
+ *
  * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
  */
-export const JsonNull: 'JsonNull'
+export const JsonNull: NullTypes.JsonNull
 
 /**
  * Helper for filtering JSON entries that are \`Prisma.DbNull\` or \`Prisma.JsonNull\`
- * 
+ *
  * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
  */
-export const AnyNull: 'AnyNull'
+export const AnyNull: NullTypes.AnyNull
 
 type SelectAndInclude = {
   select: any
   include: any
 }
-type HasSelect = {
+
+type SelectAndOmit = {
   select: any
+  omit: any
 }
-type HasInclude = {
-  include: any
-}
-type CheckSelect<T, S, U> = T extends SelectAndInclude
-  ? 'Please either choose \`select\` or \`include\`'
-  : T extends HasSelect
-  ? U
-  : T extends HasInclude
-  ? U
-  : S
 
 /**
  * Get the type of the value, that the Promise holds.
@@ -220,7 +282,7 @@ export type PromiseType<T extends PromiseLike<any>> = T extends PromiseLike<infe
 /**
  * Get the return type of a function which returns a Promise.
  */
-export type PromiseReturnType<T extends (...args: any) => Promise<any>> = PromiseType<ReturnType<T>>
+export type PromiseReturnType<T extends (...args: any) => $Utils.JsPromise<any>> = PromiseType<ReturnType<T>>
 
 /**
  * From T, pick a set of properties whose keys are in the union K
@@ -236,9 +298,9 @@ export type RequiredKeys<T> = {
   [K in keyof T]-?: {} extends Prisma__Pick<T, K> ? never : K
 }[keyof T]
 
-export type TruthyKeys<T> = {
-  [key in keyof T]: T[key] extends false | undefined | null ? never : key
-}[keyof T]
+export type TruthyKeys<T> = keyof {
+  [K in keyof T as T[K] extends false | undefined | null ? never : K]: K
+}
 
 export type TrueKeys<T> = TruthyKeys<Prisma__Pick<T, RequiredKeys<T>>>
 
@@ -260,7 +322,9 @@ export type SelectSubset<T, U> = {
 } &
   (T extends SelectAndInclude
     ? 'Please either choose \`select\` or \`include\`.'
-    : {})
+    : T extends SelectAndOmit
+      ? 'Please either choose \`select\` or \`omit\`.'
+      : {})
 
 /**
  * Subset + Intersection
@@ -277,7 +341,11 @@ type Without<T, U> = { [P in Exclude<keyof T, keyof U>]?: never };
  * XOR is needed to have a real mutually exclusive union type
  * https://stackoverflow.com/questions/42123407/does-typescript-support-mutually-exclusive-types
  */
-type XOR<T, U> = (T | U) extends object ? (Without<T, U> & U) | (Without<U, T> & T) : T | U;
+type XOR<T, U> =
+  T extends object ?
+  U extends object ?
+    (Without<T, U> & U) | (Without<U, T> & T)
+  : U : T
 
 
 /**
@@ -287,7 +355,7 @@ type IsObject<T extends any> = T extends Array<any>
 ? False
 : T extends Date
 ? False
-: T extends Buffer
+: T extends Uint8Array
 ? False
 : T extends BigInt
 ? False
@@ -372,6 +440,16 @@ type _Record<K extends keyof any, T> = {
   [P in K]: T;
 };
 
+// cause typescript not to expand types and preserve names
+type NoExpand<T> = T extends unknown ? T : never;
+
+// this type assumes the passed object is entirely optional
+type AtLeast<O extends object, K extends string> = NoExpand<
+  O extends unknown
+  ? | (K extends keyof O ? { [P in K]: O[P] } & O : O)
+    | {[P in keyof O as P extends K ? K : never]-?: O[P]} & O
+  : never>;
+
 type _Strict<U, _U = U> = U extends unknown ? U & OptionalFlat<_Record<Exclude<Keys<_U>, keyof U>, never>> : never;
 
 export type Strict<U extends object> = ComputeRaw<_Strict<U>>;
@@ -422,19 +500,11 @@ export type Or<B1 extends Boolean, B2 extends Boolean> = {
 
 export type Keys<U extends Union> = U extends unknown ? keyof U : never
 
-type Exact<A, W = unknown> = 
-W extends unknown ? A extends Narrowable ? Cast<A, W> : Cast<
-{[K in keyof A]: K extends keyof W ? Exact<A[K], W[K]> : never},
-{[K in keyof W]: K extends keyof A ? Exact<A[K], W[K]> : W[K]}>
-: never;
-
-type Narrowable = string | number | boolean | bigint;
-
 type Cast<A, B> = A extends B ? A : B;
 
 export const type: unique symbol;
 
-export function validator<V>(): <S>(select: Exact<S, V>) => S;
+
 
 /**
  * Used by group by
@@ -475,27 +545,57 @@ type TupleToUnion<K extends readonly any[]> = _TupleToUnion<K>
 type MaybeTupleToUnion<T> = T extends any[] ? TupleToUnion<T> : T
 
 /**
- * Like \`Pick\`, but with an array
+ * Like \`Pick\`, but additionally can also accept an array of keys
  */
-type PickArray<T, K extends Array<keyof T>> = Prisma__Pick<T, TupleToUnion<K>>
+type PickEnumerable<T, K extends Enumerable<keyof T> | keyof T> = Prisma__Pick<T, MaybeTupleToUnion<K>>
 
 /**
  * Exclude all keys with underscores
  */
 type ExcludeUnderscoreKeys<T extends string> = T extends \`_$\{string}\` ? never : T
 
-${
-  !hideFetcher
-    ? `class PrismaClientFetcher {
-  private readonly prisma;
-  private readonly debug;
-  private readonly hooks?;
-  constructor(prisma: PrismaClient<any, any>, debug?: boolean, hooks?: Hooks | undefined);
-  request<T>(document: any, dataPath?: string[], rootField?: string, typeName?: string, isList?: boolean, callsite?: string): Promise<T>;
-  sanitizeMessage(message: string): string;
-  protected unpack(document: any, data: any, path: string[], rootField?: string, isList?: boolean): any;
-}`
-    : ''
-}
+
+export type FieldRef<Model, FieldType> = runtime.FieldRef<Model, FieldType>
+
+type FieldRefInputType<Model, FieldType> = Model extends never ? never : FieldRef<Model, FieldType>
+
 `,
 })
+
+function buildNullClass(name: string) {
+  const source = `/**
+* Type of \`Prisma.${name}\`.
+*
+* You cannot use other instances of this class. Please use the \`Prisma.${name}\` value.
+*
+* @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
+*/
+class ${name} {
+  private ${name}: never
+  private constructor()
+}`
+  return indent(source, TAB_SIZE)
+}
+
+function buildPrismaSkipTs(previewFeatures: string[]) {
+  if (previewFeatures.includes('strictUndefinedChecks')) {
+    return `
+/**
+ * Prisma.skip
+ */
+export import skip = runtime.skip
+`
+  }
+
+  return ''
+}
+
+function buildPrismaSkipJs(previewFeatures: string[]) {
+  if (previewFeatures.includes('strictUndefinedChecks')) {
+    return `
+Prisma.skip = skip
+`
+  }
+
+  return ''
+}

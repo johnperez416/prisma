@@ -1,7 +1,6 @@
-import { PrismaClient } from '.'
 import { expectError } from 'tsd'
 
-// tslint:disable
+import { PrismaClient } from '.'
 
 const prisma = new PrismaClient({
   datasources: {
@@ -26,6 +25,13 @@ const prisma = new PrismaClient({
       select: {
         $all: true,
       },
+    }),
+  )
+
+  // See https://github.com/prisma/prisma/issues/19598
+  expectError(
+    await prisma.user.count({
+      distinct: ['name'],
     }),
   )
 })()

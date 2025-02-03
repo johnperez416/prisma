@@ -1,23 +1,25 @@
-import { ClientEngineType } from '@prisma/sdk'
+import { TSClientOptions } from '../TSClient/TSClient'
 
 /**
  * Builds the necessary bits so that our users can get a helpful warning during
  * "generate" in case of conflicts between their environment & their env files.
- * @param clientEngineType
- * @param runtimeDir
- * @param runtimeName
+ * @param edge
+ * @param runtimeBase
+ * @param runtimeNameJs
  * @returns
  */
-export function buildWarnEnvConflicts(clientEngineType: ClientEngineType, runtimeDir: string, runtimeName: string) {
-  if (clientEngineType !== ClientEngineType.DataProxy) {
-    return `
-const { warnEnvConflicts } = require('${runtimeDir}/${runtimeName}')
+export function buildWarnEnvConflicts(
+  edge: boolean,
+  runtimeBase: string,
+  runtimeNameJs: TSClientOptions['runtimeNameJs'],
+) {
+  if (edge === true) return ''
+
+  return `
+const { warnEnvConflicts } = require('${runtimeBase}/${runtimeNameJs}.js')
 
 warnEnvConflicts({
-    rootEnvPath: config.relativeEnvPaths.rootEnvPath && path.resolve(dirname, config.relativeEnvPaths.rootEnvPath),
-    schemaEnvPath: config.relativeEnvPaths.schemaEnvPath && path.resolve(dirname, config.relativeEnvPaths.schemaEnvPath)
+    rootEnvPath: config.relativeEnvPaths.rootEnvPath && path.resolve(config.dirname, config.relativeEnvPaths.rootEnvPath),
+    schemaEnvPath: config.relativeEnvPaths.schemaEnvPath && path.resolve(config.dirname, config.relativeEnvPaths.schemaEnvPath)
 })`
-  }
-
-  return ''
 }
